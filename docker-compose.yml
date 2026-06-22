@@ -1,0 +1,16 @@
+services:
+  assetiq:
+    build: .
+    container_name: assetiq
+    restart: unless-stopped
+    ports:
+      - "9920:9920"
+    volumes:
+      # Bind-mount the project so in-app GitHub updates persist across restarts.
+      - .:/app
+      # Keep the database on its own path (also covered by the mount above,
+      # listed explicitly so it's obvious where data lives).
+      - ./data:/app/data
+    environment:
+      - ASSETIQ_REPO=marsh4200/assetiq
+      - ASSETIQ_BRANCH=main
