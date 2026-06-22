@@ -9,16 +9,32 @@ In-house **asset register** + **licence / compliance expiry tracker** for AR Too
 
 Stack: FastAPI + SQLite + vanilla JS. Runs on **port 9920**.
 
-## Run
+## Install (one line)
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/marsh4200/assetiq/main/install.sh | bash
+```
+
+Clones to `/opt/assetiq`, builds, and starts on **port 9920**. Re-running the
+same command updates an existing install. Overrides:
+
+```bash
+ASSETIQ_DIR=/opt/assetiq ASSETIQ_PORT=9920 \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/marsh4200/assetiq/main/install.sh)"
+```
+
+### Or by hand
+
+```bash
+git clone https://github.com/marsh4200/assetiq.git && cd assetiq
 docker compose up -d --build
 ```
 
 Open `http://<host>:9920` (or point a Cloudflare tunnel at it).
 
 The compose file bind-mounts the project directory, so in-app updates persist.
-The database lives in `./data/assetiq.db` and is gitignored.
+The database lives in `./data/assetiq.db` and is gitignored. Keep the install
+directory put so updates land in the same place.
 
 ## Updating
 
