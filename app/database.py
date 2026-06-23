@@ -130,6 +130,26 @@ def init_db():
                )"""
         )
 
+        # --- compliance: issued date + renewal history ----------------------
+        comp_cols = [r["name"] for r in conn.execute("PRAGMA table_info(compliance)").fetchall()]
+        if "issue_date" not in comp_cols:
+            conn.execute("ALTER TABLE compliance ADD COLUMN issue_date TEXT DEFAULT ''")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS compliance_history (
+                   id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                   compliance_id INTEGER,
+                   kind          TEXT DEFAULT 'expiry',
+                   prev_issue    TEXT DEFAULT '',
+                   prev_due      TEXT DEFAULT '',
+                   new_issue     TEXT DEFAULT '',
+                   new_due       TEXT DEFAULT '',
+                   renewed_by    TEXT DEFAULT '',
+                   renewed_at    TEXT DEFAULT (datetime('now')),
+                   note          TEXT DEFAULT '',
+                   FOREIGN KEY(compliance_id) REFERENCES compliance(id) ON DELETE CASCADE
+               )"""
+        )
+
         # --- checklists -----------------------------------------------------
         conn.execute(
             """CREATE TABLE IF NOT EXISTS checklist_templates (

@@ -314,6 +314,7 @@ async function printLabels() {
 /* -------------------------------------------------------- compliance ------ */
 function compCard(c) {
   const isMachine = c.category === 'machine';
+  const isReal = Number.isInteger(c.id);   // false for warranty/checklist dashboard alerts
   const dateBlocks = [];
   if (c.expiry_date) dateBlocks.push(
     `<div><div class="k">Expires</div><div class="v">${esc(c.expiry_date)}</div>${daysBadge({ days_remaining: c.days_until_expiry, status: c.status })}</div>`);
@@ -323,6 +324,9 @@ function compCard(c) {
     `<div><div class="k">Next service</div><div class="v">${esc(c.next_service_date)}</div>${daysBadge({ days_remaining: c.days_until_service, status: c.status })}</div>`);
 
   const statusTxt = { valid: 'Valid', expiring: 'Due soon', expired: 'Expired', none: 'No date' }[c.status];
+  const canRenew = isReal && c.category !== 'warranty' && c.category !== 'checklist';
+  const renewLabel = c.status === 'expired' ? 'Renew' : 'Renew';
+
   return `
     <div class="card comp ${c.status}">
       <div class="top">
@@ -331,15 +335,67 @@ function compCard(c) {
           <div class="catline"><span class="cat">${catLabel(c.category)}</span></div>
         </div>
         <span class="status ${c.status}">${statusTxt}</span>
-        <button class="iconbtn" onclick='openComp(${c.id})' title="Edit">
+        ${isReal ? `<button class="iconbtn" onclick='openComp(${c.id})' title="Edit">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
-        </button>
+        </button>` : ''}
       </div>
       ${dateBlocks.length ? `<div class="dates">${dateBlocks.join('')}</div>` : ''}
-      ${(c.reference || c.responsible_person) ? `<div class="footer">
-        <span class="ref">${c.reference ? esc(c.reference) : ''}${c.reference && c.responsible_person ? ' · ' : ''}${c.responsible_person ? esc(c.responsible_person) : ''}</span>
+      ${c.responsible_person ? `<div class="resp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Responsible: <b>${esc(c.responsible_person)}</b></span></div>` : ''}
+      ${c.reference ? `<div class="ref-line">${esc(c.reference)}</div>` : ''}
+      ${canRenew ? `<div class="comp-actions">
+        <button class="btn small" onclick='openRenew(${c.id}, ${isMachine})'>${renewLabel}</button>
+        <button class="btn ghost small" onclick='openHistory(${c.id})'>History</button>
       </div>` : ''}
     </div>`;
+}
+
+function openRenew(id, isMachine) {
+  const title = isMachine ? 'Log service' : 'Renew';
+  $('#modal').innerHTML = `
+    <div class="mhead"><h3>${title}</h3><button class="iconbtn" onclick="closeModal()">✕</button></div>
+    <div class="mbody">
+      ${isMachine
+        ? `<div class="field"><label>Service date</label><input id="rn_service" type="date" value="${new Date().toISOString().slice(0, 10)}"></div>
+           <div class="field"><label>Next service due</label><input id="rn_due" type="date"></div>`
+        : `<div class="field"><label>New expiry date</label><input id="rn_due" type="date"></div>
+           <div class="field"><label>Date issued <span style="text-transform:none;color:var(--muted)">(optional)</span></label><input id="rn_issue" type="date"></div>`}
+      <div class="field"><label>Note <span style="text-transform:none;color:var(--muted)">(optional)</span></label><input id="rn_note" placeholder="e.g. renewed at licensing dept"></div>
+      <div class="numhint">The current dates are saved to history before the new ones take over.</div>
+    </div>
+    <div class="mfoot"><button class="btn" onclick="submitRenew(${id}, ${isMachine})">Save renewal</button></div>`;
+  $('#modalBg').classList.add('show');
+  setTimeout(() => $('#rn_due').focus(), 60);
+}
+
+async function submitRenew(id, isMachine) {
+  const due = $('#rn_due').value;
+  if (!due) { toast(isMachine ? 'Next service date is required' : 'New expiry date is required', 'err'); return; }
+  const body = { new_due: due, note: $('#rn_note').value.trim() };
+  if (isMachine) body.service_date = $('#rn_service').value;
+  else body.issue_date = ($('#rn_issue') || {}).value || '';
+  try {
+    await API('/compliance/' + id + '/renew', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    closeModal(); toast('Renewed — back up to date', 'ok');
+    loadComp(); refreshBell();
+    if ($('#view-dashboard').classList.contains('active')) loadDashboard();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function openHistory(id) {
+  let hist;
+  try { hist = await API('/compliance/' + id + '/history'); } catch (e) { toast(e.message, 'err'); return; }
+  $('#modal').innerHTML = `
+    <div class="mhead"><h3>Renewal history</h3><button class="iconbtn" onclick="closeModal()">✕</button></div>
+    <div class="mbody">
+      ${!hist.length ? '<p style="color:var(--muted)">No renewals recorded yet.</p>' :
+        hist.map(h => `
+          <div class="hist-row">
+            <div class="hist-line"><span class="old">${esc(h.prev_due || '—')}</span> <span class="arr">→</span> <b>${esc(h.new_due)}</b></div>
+            <div class="hist-meta">${esc(h.renewed_at.replace('T', ' ').slice(0, 16))}${h.renewed_by ? ' · ' + esc(h.renewed_by) : ''}${h.new_issue ? ' · issued ' + esc(h.new_issue) : ''}</div>
+            ${h.note ? `<div class="hist-note">${esc(h.note)}</div>` : ''}
+          </div>`).join('')}
+    </div>`;
+  $('#modalBg').classList.add('show');
 }
 
 async function loadComp() {
@@ -373,7 +429,10 @@ function openComp(id) {
       <div class="mbody">
         <div class="field"><label>Name</label><input id="c_name" value="${esc(c.name)}" placeholder="e.g. Crane operator licence – J. Smith"></div>
         <div class="field"><label>Type</label><select id="c_category" onchange="compFieldToggle()">${opts}</select></div>
-        <div id="expiryWrap" class="field"><label>Expiry date</label><input id="c_expiry_date" type="date" value="${esc(c.expiry_date)}"></div>
+        <div id="expiryWrap"><div class="grid2">
+          <div class="field"><label>Date issued</label><input id="c_issue_date" type="date" value="${esc(c.issue_date)}"></div>
+          <div class="field"><label>Expiry date</label><input id="c_expiry_date" type="date" value="${esc(c.expiry_date)}"></div>
+        </div></div>
         <div id="serviceWrap" class="grid2" style="display:none">
           <div class="field"><label>Last service</label><input id="c_last_service_date" type="date" value="${esc(c.last_service_date)}"></div>
           <div class="field"><label>Next service due</label><input id="c_next_service_date" type="date" value="${esc(c.next_service_date)}"></div>
@@ -407,6 +466,7 @@ async function saveComp(id) {
     category: $('#c_category').value,
     reference: $('#c_reference').value.trim(),
     responsible_person: $('#c_responsible_person').value.trim(),
+    issue_date: isMachine ? '' : ($('#c_issue_date') || {}).value || '',
     expiry_date: isMachine ? '' : $('#c_expiry_date').value,
     last_service_date: isMachine ? $('#c_last_service_date').value : '',
     next_service_date: isMachine ? $('#c_next_service_date').value : '',

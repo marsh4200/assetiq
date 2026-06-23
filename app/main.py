@@ -48,10 +48,18 @@ class Compliance(BaseModel):
     category: str = "other"
     reference: str = ""
     responsible_person: str = ""
+    issue_date: str = ""
     expiry_date: str = ""
     last_service_date: str = ""
     next_service_date: str = ""
     notes: str = ""
+
+
+class RenewIn(BaseModel):
+    new_due: str                # new expiry date, or next service due (required)
+    issue_date: str = ""        # date newly issued (optional)
+    service_date: str = ""      # for machines: when the service was done
+    note: str = ""
 
 
 class SettingsIn(BaseModel):
@@ -386,9 +394,9 @@ def create_compliance(c: Compliance, user: dict = Depends(auth.current_user)):
     with database.db() as conn:
         cur = conn.execute(
             "INSERT INTO compliance (name, category, reference, responsible_person, "
-            "expiry_date, last_service_date, next_service_date, notes) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (c.name, c.category, c.reference, c.responsible_person,
+            "issue_date, expiry_date, last_service_date, next_service_date, notes) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (c.name, c.category, c.reference, c.responsible_person, c.issue_date,
              c.expiry_date, c.last_service_date, c.next_service_date, c.notes),
         )
         row = conn.execute("SELECT * FROM compliance WHERE id=?", (cur.lastrowid,)).fetchone()
@@ -403,8 +411,8 @@ def update_compliance(item_id: int, c: Compliance, user: dict = Depends(auth.cur
             raise HTTPException(404, "Item not found")
         conn.execute(
             "UPDATE compliance SET name=?, category=?, reference=?, responsible_person=?, "
-            "expiry_date=?, last_service_date=?, next_service_date=?, notes=? WHERE id=?",
-            (c.name, c.category, c.reference, c.responsible_person,
+            "issue_date=?, expiry_date=?, last_service_date=?, next_service_date=?, notes=? WHERE id=?",
+            (c.name, c.category, c.reference, c.responsible_person, c.issue_date,
              c.expiry_date, c.last_service_date, c.next_service_date, c.notes, item_id),
         )
         row = conn.execute("SELECT * FROM compliance WHERE id=?", (item_id,)).fetchone()
@@ -414,8 +422,54 @@ def update_compliance(item_id: int, c: Compliance, user: dict = Depends(auth.cur
 @app.delete("/api/compliance/{item_id}")
 def delete_compliance(item_id: int, user: dict = Depends(auth.current_user)):
     with database.db() as conn:
+        conn.execute("DELETE FROM compliance_history WHERE compliance_id=?", (item_id,))
         conn.execute("DELETE FROM compliance WHERE id=?", (item_id,))
     return {"ok": True}
+
+
+@app.post("/api/compliance/{item_id}/renew")
+def renew_compliance(item_id: int, r: RenewIn, user: dict = Depends(auth.current_user)):
+    if not r.new_due.strip():
+        raise HTTPException(400, "A new date is required to renew")
+    with database.db() as conn:
+        row = conn.execute("SELECT * FROM compliance WHERE id=?", (item_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Item not found")
+        item = dict(row)
+        is_machine = item["category"] == "machine"
+        if is_machine:
+            prev_due = item.get("next_service_date", "")
+            prev_issue = item.get("last_service_date", "")
+            new_issue = r.service_date or date.today().isoformat()
+            conn.execute(
+                "UPDATE compliance SET last_service_date=?, next_service_date=? WHERE id=?",
+                (new_issue, r.new_due, item_id),
+            )
+        else:
+            prev_due = item.get("expiry_date", "")
+            prev_issue = item.get("issue_date", "")
+            new_issue = r.issue_date or ""
+            conn.execute(
+                "UPDATE compliance SET expiry_date=?, issue_date=? WHERE id=?",
+                (r.new_due, new_issue, item_id),
+            )
+        conn.execute(
+            "INSERT INTO compliance_history (compliance_id, kind, prev_issue, prev_due, "
+            "new_issue, new_due, renewed_by, note) VALUES (?,?,?,?,?,?,?,?)",
+            (item_id, "service" if is_machine else "expiry", prev_issue, prev_due,
+             new_issue, r.new_due, user.get("username", ""), r.note),
+        )
+        out = conn.execute("SELECT * FROM compliance WHERE id=?", (item_id,)).fetchone()
+    return _decorate_compliance(out, _lead_days())
+
+
+@app.get("/api/compliance/{item_id}/history")
+def compliance_history(item_id: int, user: dict = Depends(auth.current_user)):
+    with database.db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM compliance_history WHERE compliance_id=? ORDER BY id DESC",
+            (item_id,)).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ------------------------------------------------------- notifications ------

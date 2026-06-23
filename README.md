@@ -72,6 +72,19 @@ It pulls the `main` branch zip, copies files over the running code (leaving
 `data/` untouched), bumps `VERSION`, and restarts the container on the new code.
 
 
+## What's in 1.5.0
+
+- **Renew button** — on any tracked item (Tracker tab *and* straight from the
+  Overview), tap **Renew**, enter the new expiry date (required) and date issued
+  (optional). For machines it asks the service date + next service due instead.
+  The item updates and drops off the dashboard once it's valid again.
+- **Renewal history** — every renewal archives the previous dates. Tap **History**
+  on an item to see old → new, who renewed it, when, and any note.
+- **Responsible person on the Overview** — each alert now shows
+  *Responsible: <name>* so you can see who's on the hook at a glance.
+- **Date issued** — tracked items now record when they were issued, not just when
+  they expire.
+
 ## What's in 1.4.0
 
 - **Checks tab** — run checklists from your phone. Ships with a **Truck — Daily

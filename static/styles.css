@@ -310,6 +310,22 @@ label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 5px;
 .seg-btn.pass.on { background: color-mix(in srgb, var(--valid) 22%, transparent); color: var(--valid); }
 .seg-btn.fail.on { background: color-mix(in srgb, var(--expired) 22%, transparent); color: var(--expired); }
 .seg-btn.na.on   { background: var(--surface-2); color: var(--text); }
+
+/* compliance: responsible, renew actions, history */
+.comp .resp { display: flex; align-items: center; gap: 7px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.comp .resp svg { width: 15px; height: 15px; flex: 0 0 auto; }
+.comp .resp b { color: var(--text); font-weight: 600; }
+.comp .ref-line { margin-top: 6px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.comp-actions { display: flex; gap: 8px; margin-top: 12px; }
+.comp-actions .btn { flex: 0 0 auto; }
+.hist-row { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.hist-row:last-child { border-bottom: 0; }
+.hist-line { font-size: 15px; }
+.hist-line .old { color: var(--muted); text-decoration: line-through; font-family: var(--mono); }
+.hist-line .arr { color: var(--muted); margin: 0 4px; }
+.hist-line b { font-family: var(--mono); color: var(--valid); }
+.hist-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.hist-note { font-size: 13px; margin-top: 4px; }
 .auth-box {
   width: 100%; max-width: 380px; background: var(--surface);
   border: 1px solid var(--line); border-radius: 18px; padding: 28px 24px;
