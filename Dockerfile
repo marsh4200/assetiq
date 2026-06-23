@@ -9,7 +9,10 @@ RUN pip install --no-cache-dir -r /app/app/requirements.txt
 # Copy the application (overlaid by the bind mount in docker-compose so that
 # in-app self-updates persist).
 COPY . /app
+RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 9920
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9920"]
+# The entrypoint re-installs requirements on start so updates that add a new
+# dependency self-heal when the updater restarts the container.
+CMD ["bash", "/app/entrypoint.sh"]

@@ -71,6 +71,20 @@ The daily job runs inside the app — no cron needed.
 It pulls the `main` branch zip, copies files over the running code (leaving
 `data/` untouched), bumps `VERSION`, and restarts the container on the new code.
 
+
+## Updating (how it works)
+
+**Settings → Software → Check for updates.** When an update is available you'll
+see a progress screen with live steps: download & apply → restart → back online.
+The page polls the server and reloads itself automatically once it returns.
+
+The container reinstalls Python requirements on every start (via `entrypoint.sh`),
+so an update that adds a new library self-heals on restart — no manual rebuild.
+The app shell is served no-cache with version-stamped JS/CSS, so a new version
+always shows immediately without a hard refresh.
+
+If an update ever doesn't come back, check logs with `docker compose logs --tail=50`.
+
 ## Backup & restore
 
 **Settings → Backup** (admin only). Point it at a Samba/SMB share and it keeps a

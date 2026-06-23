@@ -445,7 +445,14 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    with open(os.path.join(STATIC_DIR, "index.html")) as f:
+        html = f.read().replace("__VERSION__", updater.local_version())
+    # Never cache the shell, so a freshly versioned app.js/styles.css is fetched.
+    return Response(
+        content=html,
+        media_type="text/html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 @app.get("/health")

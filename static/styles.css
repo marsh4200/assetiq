@@ -241,6 +241,28 @@ label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 5px;
   display: none; align-items: center; justify-content: center; padding: 24px;
 }
 .auth-overlay.show { display: flex; }
+
+/* update progress */
+.progress { height: 8px; background: var(--surface-2); border: 1px solid var(--line);
+            border-radius: 999px; overflow: hidden; margin: 18px 0 14px; }
+.progress-fill { height: 100%; width: 0%; background: var(--accent);
+                 border-radius: 999px; transition: width .4s ease; }
+.upd-steps { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.upd-step { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.upd-step .dot { width: 18px; height: 18px; border-radius: 50%; flex: 0 0 auto;
+                 border: 2px solid var(--line); display: grid; place-items: center; font-size: 11px; }
+.upd-step.active { color: var(--text); }
+.upd-step.active .dot { border-color: var(--accent); color: var(--accent); }
+.upd-step.done { color: var(--text); }
+.upd-step.done .dot { background: var(--valid); border-color: var(--valid); color: #0c1f17; }
+
+/* asset label-number quick picks */
+.numhint { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.numchips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.numchip { font-family: var(--mono); font-size: 12px; padding: 5px 9px; border-radius: 7px;
+           background: var(--surface-2); border: 1px solid var(--line); color: var(--text); cursor: pointer; }
+.numchip.free { border-style: dashed; color: var(--muted); }
+.numchip.on { border-color: var(--accent); color: var(--accent); border-style: solid; }
 .auth-box {
   width: 100%; max-width: 380px; background: var(--surface);
   border: 1px solid var(--line); border-radius: 18px; padding: 28px 24px;

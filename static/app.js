@@ -116,11 +116,21 @@ async function loadAssets() {
 
 function openAsset(id) {
   const editing = id != null;
-  const get = editing
-    ? API('/assets').then(r => r.find(x => x.id === id))
-    : API('/assets/next-number').then(r => ({ asset_no: r.next }));
-  get.then(a => {
-    a = a || {};
+  API('/assets').then(list => {
+    const a = editing ? (list.find(x => x.id === id) || {}) : {};
+    const used = new Set(list.map(x => x.asset_no).filter(n => n != null));
+    if (editing && a.asset_no != null) used.delete(a.asset_no);  // its own number is free to keep
+    let max = 0; used.forEach(n => { if (n > max) max = n; });
+    let next = 1; while (used.has(next)) next++;
+    const freed = [];
+    for (let n = 1; n < next; n++) if (!used.has(n)) freed.push(n);  // gaps below next
+    const suggested = editing ? (a.asset_no ?? next) : next;
+    // Quick-pick: any freed/gap numbers, plus the next new number.
+    const picks = [...new Set([...freed, next, suggested])].sort((x, y) => x - y).slice(0, 14);
+    const hint = editing
+      ? 'Edit the number, or tap a free one below to reassign.'
+      : (freed.length ? 'Set to the next free number — tap a freed one to reuse it.' : 'Next free number. Change it if you want.');
+
     $('#modal').innerHTML = `
       <div class="mhead">
         <h3>${editing ? 'Edit asset' : 'New asset'}</h3>
@@ -128,10 +138,17 @@ function openAsset(id) {
       </div>
       <div class="mbody">
         <div class="grid2">
-          <div class="field"><label>Label number</label><input id="f_asset_no" type="number" min="1" value="${a.asset_no ?? ''}"></div>
+          <div class="field">
+            <label>Label number</label>
+            <input id="f_asset_no" type="number" min="1" value="${suggested}">
+          </div>
           <div class="field"><label>Category</label><input id="f_category" value="${esc(a.category)}" placeholder="Furniture / Tool…"></div>
         </div>
-        <div class="field"><label>Name</label><input id="f_name" value="${esc(a.name)}" placeholder="e.g. Office chair – Roxanne"></div>
+        <div class="numhint">${hint}</div>
+        <div class="numchips">${picks.map(n =>
+          `<button type="button" class="numchip${n === suggested ? ' on' : ''}${freed.includes(n) ? ' free' : ''}" onclick="setAssetNo(${n})">${String(n).padStart(3, '0')}</button>`
+        ).join('')}</div>
+        <div class="field" style="margin-top:14px"><label>Name</label><input id="f_name" value="${esc(a.name)}" placeholder="e.g. Office chair – Roxanne"></div>
         <div class="field"><label>Description</label><input id="f_description" value="${esc(a.description)}"></div>
         <div class="grid2">
           <div class="field"><label>Location</label><input id="f_location" value="${esc(a.location)}"></div>
@@ -147,6 +164,12 @@ function openAsset(id) {
     $('#modalBg').classList.add('show');
     setTimeout(() => $('#f_name').focus(), 60);
   });
+}
+
+function setAssetNo(n) {
+  $('#f_asset_no').value = n;
+  document.querySelectorAll('.numchip').forEach(c =>
+    c.classList.toggle('on', parseInt(c.textContent, 10) === n));
 }
 
 async function saveAsset(id) {
@@ -474,36 +497,113 @@ function applySettings() {
 
 /* ------------------------------------------------------------- update ----- */
 let updateState = 'check';
+const UPD_STEPS = [
+  ['check', 'Checking for a new version'],
+  ['download', 'Downloading & applying files'],
+  ['restart', 'Restarting the server'],
+  ['ready', 'Coming back online'],
+];
+
+function renderUpdSteps(activeKey, doneKeys = []) {
+  $('#updSteps').innerHTML = UPD_STEPS.map(([k, label]) => {
+    const cls = doneKeys.includes(k) ? 'done' : (k === activeKey ? 'active' : '');
+    const mark = doneKeys.includes(k) ? '✓' : '';
+    return `<div class="upd-step ${cls}"><span class="dot">${mark}</span><span>${label}</span></div>`;
+  }).join('');
+}
+function setUpdProgress(pct, phase) {
+  $('#updFill').style.width = pct + '%';
+  if (phase) $('#updPhase').textContent = phase;
+}
+
 async function doUpdate() {
   const btn = $('#updBtn');
-  btn.disabled = true;
   if (updateState === 'check') {
-    btn.textContent = 'Checking…';
+    btn.disabled = true; btn.textContent = 'Checking…';
     try {
       const r = await API('/update/check');
       if (r.error) { $('#updMsg').textContent = 'Could not reach GitHub: ' + r.error; btn.textContent = 'Check'; }
       else if (r.update_available) {
         $('#updTitle').textContent = `Update available — v${r.latest}`;
         $('#updMsg').textContent = `You're on v${r.current}. Tap to install.`;
-        btn.textContent = 'Update now'; updateState = 'apply';
+        btn.textContent = `Update to v${r.latest}`; updateState = 'apply';
       } else {
         $('#updMsg').textContent = `You're on the latest version (v${r.current}).`;
         btn.textContent = 'Check';
       }
     } catch (e) { toast(e.message, 'err'); btn.textContent = 'Check'; }
-  } else {
-    btn.textContent = 'Updating…'; $('#updMsg').textContent = 'Downloading and applying…';
-    try {
-      const r = await API('/update', { method: 'POST' });
-      if (r.ok) {
-        $('#updMsg').textContent = r.message;
-        btn.textContent = 'Restarting…';
-        setTimeout(() => location.reload(), 6000);
-        return;
-      } else { $('#updMsg').textContent = r.message; btn.textContent = 'Update now'; }
-    } catch (e) { toast(e.message, 'err'); btn.textContent = 'Update now'; }
+    btn.disabled = false;
+    return;
   }
-  btn.disabled = false;
+  runUpdate();
+}
+
+async function runUpdate() {
+  const before = ($('#verPill').textContent || '').replace('v', '').trim();
+  $('#updError').textContent = '';
+  $('#updateOverlay').classList.add('show');
+  renderUpdSteps('check');
+  setUpdProgress(8, 'Starting update…');
+
+  // Step 1 → 2: kick off the server-side download+apply.
+  renderUpdSteps('download', ['check']);
+  setUpdProgress(30, 'Downloading and applying the new version…');
+  let resp;
+  try {
+    resp = await API('/update', { method: 'POST' });
+  } catch (e) {
+    // The server may drop the connection as it restarts mid-request — treat
+    // that as "applied, now restarting" and move to polling.
+    resp = { ok: true, message: 'Applied — restarting' };
+  }
+  if (resp && resp.ok === false) {
+    $('#updError').textContent = resp.message || 'Update failed';
+    setUpdProgress(0, 'Update could not be applied');
+    setTimeout(() => $('#updateOverlay').classList.remove('show'), 3500);
+    return;
+  }
+
+  // Step 3: server restarts (entrypoint reinstalls deps, so this can take a bit).
+  renderUpdSteps('restart', ['check', 'download']);
+  setUpdProgress(55, 'Restarting — installing any new components…');
+
+  // Step 4: poll until the server answers again with a (hopefully newer) version.
+  const back = await waitForServer(before);
+  renderUpdSteps('ready', ['check', 'download', 'restart']);
+  if (back.ok) {
+    renderUpdSteps(null, ['check', 'download', 'restart', 'ready']);
+    setUpdProgress(100, `Back online${back.version ? ' on v' + back.version : ''} — reloading…`);
+    setTimeout(() => location.reload(true), 1200);
+  } else {
+    setUpdProgress(80, 'Taking longer than expected');
+    $('#updError').textContent = 'The server hasn\'t come back yet. It may still be installing — this page will reload automatically once it does.';
+    // keep polling quietly, then reload when it returns
+    const back2 = await waitForServer(before, 60);
+    if (back2.ok) location.reload(true);
+    else $('#updError').textContent = 'Still down after a few minutes. Check the container logs (docker compose logs).';
+  }
+}
+
+// Poll /health (public) until the server answers again, then read the version.
+// Tries for ~tries*2 seconds.
+async function waitForServer(beforeVersion, tries = 90) {
+  for (let i = 0; i < tries; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    const cur = parseFloat($('#updFill').style.width) || 55;
+    if (cur < 92) setUpdProgress(Math.min(92, cur + 1.5));
+    try {
+      const h = await fetch('/health', { cache: 'no-store' });
+      if (h.ok) {
+        let version = '';
+        try {
+          const r = await fetch('/api/version', { headers: { Authorization: 'Bearer ' + TOKEN }, cache: 'no-store' });
+          if (r.ok) version = (await r.json()).version;
+        } catch (e) {}
+        return { ok: true, version };
+      }
+    } catch (e) { /* still down */ }
+  }
+  return { ok: false };
 }
 
 /* ------------------------------------------------------------- bell ------- */
