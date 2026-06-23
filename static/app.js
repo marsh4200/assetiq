@@ -93,17 +93,22 @@ async function loadAssets() {
       q ? 'Try a different search.' : 'Add your first asset to start the register.');
     return;
   }
-  list.innerHTML = rows.map(a => `
+  list.innerHTML = rows.map(a => {
+    const w = warrantyMeta(a.warranty_expiry);
+    return `
     <div class="card asset">
-      <div class="tag">${String(a.asset_no).padStart(3, '0')}</div>
+      ${a.has_photo
+        ? `<div class="thumb" data-photo="${a.id}" onclick="viewPhoto(${a.id})"></div>`
+        : `<div class="tag">${String(a.asset_no).padStart(3, '0')}</div>`}
       <div class="meta">
-        <div class="name">${esc(a.name)}</div>
+        <div class="name">${a.has_photo ? `<span class="mono" style="color:var(--accent)">#${String(a.asset_no).padStart(3, '0')}</span> ` : ''}${esc(a.name)}</div>
         ${a.description ? `<div class="desc">${esc(a.description)}</div>` : ''}
         <div class="chips">
           ${a.category ? `<span class="chip">${esc(a.category)}</span>` : ''}
           ${a.location ? `<span class="chip">📍 ${esc(a.location)}</span>` : ''}
           ${a.assigned_to ? `<span class="chip">${esc(a.assigned_to)}</span>` : ''}
           ${a.serial_number ? `<span class="chip"><span class="mono">${esc(a.serial_number)}</span></span>` : ''}
+          ${w ? `<span class="warranty-chip ${w.cls}">${w.label}</span>` : ''}
         </div>
       </div>
       <div class="rowactions">
@@ -111,7 +116,41 @@ async function loadAssets() {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
         </button>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
+  loadThumbs();
+}
+
+function warrantyMeta(expiry) {
+  if (!expiry) return null;
+  const days = Math.ceil((new Date(expiry) - new Date()) / 86400000);
+  const lead = parseInt(settings.notify_lead_days || 60, 10);
+  let cls = 'valid', label = `Warranty ${expiry}`;
+  if (days < 0) { cls = 'expired'; label = 'Warranty expired'; }
+  else if (days <= lead) { cls = 'expiring'; label = `Warranty ${days}d`; }
+  return { cls, label };
+}
+
+// Lazy-load card thumbnails as authorised blobs (img tags can't send headers).
+async function loadThumbs() {
+  for (const el of document.querySelectorAll('.thumb[data-photo]')) {
+    const id = el.getAttribute('data-photo');
+    el.removeAttribute('data-photo');
+    try {
+      const r = await fetch(`/api/assets/${id}/photo`, { headers: { Authorization: 'Bearer ' + TOKEN } });
+      if (r.ok) { const url = URL.createObjectURL(await r.blob()); el.style.backgroundImage = `url(${url})`; }
+    } catch (e) {}
+  }
+}
+
+async function viewPhoto(id) {
+  try {
+    const r = await fetch(`/api/assets/${id}/photo`, { headers: { Authorization: 'Bearer ' + TOKEN } });
+    if (!r.ok) return;
+    const url = URL.createObjectURL(await r.blob());
+    $('#lightboxImg').src = url;
+    $('#lightbox').classList.add('show');
+  } catch (e) {}
 }
 
 function openAsset(id) {
@@ -155,15 +194,75 @@ function openAsset(id) {
           <div class="field"><label>Assigned to</label><input id="f_assigned_to" value="${esc(a.assigned_to)}"></div>
         </div>
         <div class="field"><label>Serial number</label><input id="f_serial_number" value="${esc(a.serial_number)}"></div>
+
+        <div class="field"><label>Photo</label>
+          <div class="photo-pick">
+            <div class="preview ${a.has_photo ? '' : 'empty'}" id="photoPreview" ${a.has_photo ? `data-photo="${id}"` : ''}>${a.has_photo ? '' : 'No photo'}</div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <button type="button" class="btn ghost small" onclick="document.getElementById('photoInput').click()">${a.has_photo ? 'Replace' : 'Add photo'}</button>
+              <button type="button" class="btn ghost small" id="photoRemoveBtn" onclick="removePhoto()" style="${a.has_photo ? '' : 'display:none'}">Remove</button>
+            </div>
+            <input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none" onchange="pickPhoto(this)">
+          </div>
+        </div>
+
+        <div class="section-label" style="margin:14px 0 10px;font-size:12px">Purchase &amp; warranty</div>
+        <div class="grid2">
+          <div class="field"><label>Purchase date</label><input id="f_purchase_date" type="date" value="${esc(a.purchase_date)}"></div>
+          <div class="field"><label>Cost</label><input id="f_cost" inputmode="decimal" value="${esc(a.cost)}" placeholder="R"></div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Supplier</label><input id="f_supplier" value="${esc(a.supplier)}"></div>
+          <div class="field"><label>Warranty expiry</label><input id="f_warranty_expiry" type="date" value="${esc(a.warranty_expiry)}"></div>
+        </div>
+
         <div class="field"><label>Notes</label><textarea id="f_notes">${esc(a.notes)}</textarea></div>
       </div>
       <div class="mfoot">
         ${editing ? `<button class="btn danger" onclick="deleteAsset(${id})">Delete</button>` : ''}
         <button class="btn" onclick="saveAsset(${editing ? id : 'null'})">Save</button>
       </div>`;
+    assetPhoto = undefined;            // unchanged until the user picks/removes
     $('#modalBg').classList.add('show');
+    if (a.has_photo) loadPreviewThumb(id);
     setTimeout(() => $('#f_name').focus(), 60);
   });
+}
+
+let assetPhoto;   // undefined = unchanged, '' = remove, dataURL = new image
+
+async function loadPreviewThumb(id) {
+  try {
+    const r = await fetch(`/api/assets/${id}/photo`, { headers: { Authorization: 'Bearer ' + TOKEN } });
+    if (r.ok) $('#photoPreview').style.backgroundImage = `url(${URL.createObjectURL(await r.blob())})`;
+  } catch (e) {}
+}
+
+function pickPhoto(input) {
+  const file = input.files[0]; input.value = '';
+  if (!file) return;
+  const img = new Image();
+  const reader = new FileReader();
+  reader.onload = () => { img.onload = () => {
+    // Downscale to max 1024px, export JPEG ~0.72 so the DB stays small.
+    const max = 1024;
+    let { width: w, height: h } = img;
+    if (w > max || h > max) { const s = max / Math.max(w, h); w = Math.round(w * s); h = Math.round(h * s); }
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    c.getContext('2d').drawImage(img, 0, 0, w, h);
+    assetPhoto = c.toDataURL('image/jpeg', 0.72);
+    const p = $('#photoPreview');
+    p.classList.remove('empty'); p.textContent = ''; p.style.backgroundImage = `url(${assetPhoto})`;
+    $('#photoRemoveBtn').style.display = '';
+  }; img.src = reader.result; };
+  reader.readAsDataURL(file);
+}
+
+function removePhoto() {
+  assetPhoto = '';
+  const p = $('#photoPreview');
+  p.classList.add('empty'); p.textContent = 'No photo'; p.style.backgroundImage = '';
+  $('#photoRemoveBtn').style.display = 'none';
 }
 
 function setAssetNo(n) {
@@ -174,10 +273,12 @@ function setAssetNo(n) {
 
 async function saveAsset(id) {
   const body = {};
-  ['name', 'description', 'category', 'location', 'serial_number', 'assigned_to', 'notes']
+  ['name', 'description', 'category', 'location', 'serial_number', 'assigned_to', 'notes',
+   'purchase_date', 'cost', 'supplier', 'warranty_expiry']
     .forEach(k => body[k] = $('#f_' + k).value.trim());
   const noVal = $('#f_asset_no').value.trim();
   body.asset_no = noVal ? parseInt(noVal, 10) : null;
+  if (assetPhoto !== undefined) body.photo = assetPhoto;   // '' removes, dataURL sets
   if (!body.name) { toast('Name is required', 'err'); return; }
   try {
     await API(id ? '/assets/' + id : '/assets',
@@ -192,14 +293,21 @@ async function deleteAsset(id) {
   catch (e) { toast(e.message, 'err'); }
 }
 
-function printLabels() {
-  API('/assets').then(rows => {
-    if (!rows.length) { toast('No assets to print', 'err'); return; }
-    $('#labelSheet').innerHTML = rows.map(a =>
-      `<div class="label"><div class="no">${String(a.asset_no).padStart(3, '0')}</div><div class="nm">${esc(a.name)}</div></div>`
-    ).join('');
-    window.print();
-  });
+async function printLabels() {
+  let rows;
+  try { rows = await API('/assets'); } catch (e) { toast(e.message, 'err'); return; }
+  if (!rows.length) { toast('No assets to print', 'err'); return; }
+  toast('Building labels…');
+  // Fetch each QR (authorised) and inline the SVG.
+  const qrs = await Promise.all(rows.map(a =>
+    fetch(`/api/assets/${a.id}/qr.svg`, { headers: { Authorization: 'Bearer ' + TOKEN } })
+      .then(r => r.ok ? r.text() : '').catch(() => '')));
+  $('#labelSheet').innerHTML = rows.map((a, i) =>
+    `<div class="label">
+       <div class="qr">${qrs[i]}</div>
+       <div class="lbl-text"><div class="no">${String(a.asset_no).padStart(3, '0')}</div><div class="nm">${esc(a.name)}</div></div>
+     </div>`).join('');
+  setTimeout(() => window.print(), 150);
 }
 
 /* -------------------------------------------------------- compliance ------ */
@@ -410,6 +518,14 @@ async function backupNow() {
   } catch (e) { toast(e.message, 'err'); }
 }
 
+function exportCSV(kind) {
+  toast('Exporting…');
+  fetch(`/api/export/${kind}.csv`, { headers: { Authorization: 'Bearer ' + TOKEN } })
+    .then(r => { if (!r.ok) throw new Error('Export failed'); return r.blob(); })
+    .then(b => triggerDownload(b, `assetiq-${kind}.csv`))
+    .catch(e => toast(e.message, 'err'));
+}
+
 function triggerDownload(blob, name) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -513,6 +629,8 @@ function renderUpdSteps(activeKey, doneKeys = []) {
 }
 function setUpdProgress(pct, phase) {
   $('#updFill').style.width = pct + '%';
+  $('#updPct').textContent = Math.round(pct) + '%';
+  $('#updRingBar').style.strokeDashoffset = String(176 - (176 * pct / 100));
   if (phase) $('#updPhase').textContent = phase;
 }
 
@@ -540,7 +658,9 @@ async function doUpdate() {
 
 async function runUpdate() {
   const before = ($('#verPill').textContent || '').replace('v', '').trim();
+  const latest = (($('#updTitle').textContent || '').match(/v([\d.]+)/) || [])[1] || '';
   $('#updError').textContent = '';
+  $('#updVer').innerHTML = before ? `v${before} &nbsp;→&nbsp; <b>v${latest || '…'}</b>` : '';
   $('#updateOverlay').classList.add('show');
   renderUpdSteps('check');
   setUpdProgress(8, 'Starting update…');

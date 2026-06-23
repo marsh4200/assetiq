@@ -111,6 +111,25 @@ def init_db():
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_assets_no ON assets(asset_no)"
         )
 
+        # --- migration: purchase / warranty tracking ------------------------
+        for col, decl in (
+            ("purchase_date", "TEXT DEFAULT ''"),
+            ("cost", "TEXT DEFAULT ''"),
+            ("supplier", "TEXT DEFAULT ''"),
+            ("warranty_expiry", "TEXT DEFAULT ''"),
+        ):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE assets ADD COLUMN {col} {decl}")
+
+        # --- photos in their own table so the asset list stays light --------
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS asset_photos (
+                   asset_id INTEGER PRIMARY KEY,
+                   data     TEXT,
+                   FOREIGN KEY(asset_id) REFERENCES assets(id) ON DELETE CASCADE
+               )"""
+        )
+
 
 def next_free_asset_no():
     """Smallest positive integer not currently used as a label number.

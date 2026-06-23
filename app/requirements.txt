@@ -3,3 +3,4 @@ uvicorn[standard]==0.34.0
 requests==2.32.3
 smbprotocol==1.15.0
 python-multipart==0.0.20
+segno==1.6.1

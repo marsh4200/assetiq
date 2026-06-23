@@ -34,6 +34,11 @@ class Asset(BaseModel):
     serial_number: str = ""
     assigned_to: str = ""
     notes: str = ""
+    purchase_date: str = ""
+    cost: str = ""
+    supplier: str = ""
+    warranty_expiry: str = ""
+    photo: str | None = None        # base64 data URL; None = leave unchanged
 
 
 class Compliance(BaseModel):
@@ -193,12 +198,20 @@ def list_assets(q: str = "", user: dict = Depends(auth.current_user)):
             rows = conn.execute(
                 "SELECT * FROM assets WHERE name LIKE ? OR description LIKE ? "
                 "OR category LIKE ? OR location LIKE ? OR serial_number LIKE ? "
-                "OR assigned_to LIKE ? ORDER BY asset_no",
-                (like, like, like, like, like, like),
+                "OR assigned_to LIKE ? OR supplier LIKE ? OR CAST(asset_no AS TEXT) LIKE ? "
+                "ORDER BY asset_no",
+                (like, like, like, like, like, like, like, like),
             ).fetchall()
         else:
             rows = conn.execute("SELECT * FROM assets ORDER BY asset_no").fetchall()
-    return [dict(r) for r in rows]
+        with_photos = {r["asset_id"] for r in conn.execute(
+            "SELECT asset_id FROM asset_photos").fetchall()}
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["has_photo"] = d["id"] in with_photos
+        out.append(d)
+    return out
 
 
 def _resolve_asset_no(conn, requested, exclude_id=None):
@@ -216,16 +229,33 @@ def _resolve_asset_no(conn, requested, exclude_id=None):
     return requested
 
 
+def _save_photo(conn, asset_id, photo):
+    """photo: None = leave as-is; '' = remove; data URL = set."""
+    if photo is None:
+        return
+    if photo == "":
+        conn.execute("DELETE FROM asset_photos WHERE asset_id=?", (asset_id,))
+    else:
+        conn.execute(
+            "INSERT INTO asset_photos (asset_id, data) VALUES (?,?) "
+            "ON CONFLICT(asset_id) DO UPDATE SET data=excluded.data",
+            (asset_id, photo),
+        )
+
+
 @app.post("/api/assets")
 def create_asset(a: Asset, user: dict = Depends(auth.current_user)):
     with database.db() as conn:
         asset_no = _resolve_asset_no(conn, a.asset_no)
         cur = conn.execute(
             "INSERT INTO assets (asset_no, name, description, category, location, "
-            "serial_number, assigned_to, notes) VALUES (?,?,?,?,?,?,?,?)",
+            "serial_number, assigned_to, notes, purchase_date, cost, supplier, "
+            "warranty_expiry) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (asset_no, a.name, a.description, a.category, a.location,
-             a.serial_number, a.assigned_to, a.notes),
+             a.serial_number, a.assigned_to, a.notes, a.purchase_date, a.cost,
+             a.supplier, a.warranty_expiry),
         )
+        _save_photo(conn, cur.lastrowid, a.photo)
         row = conn.execute("SELECT * FROM assets WHERE id=?", (cur.lastrowid,)).fetchone()
     return dict(row)
 
@@ -239,10 +269,13 @@ def update_asset(asset_id: int, a: Asset, user: dict = Depends(auth.current_user
         asset_no = _resolve_asset_no(conn, a.asset_no, exclude_id=asset_id)
         conn.execute(
             "UPDATE assets SET asset_no=?, name=?, description=?, category=?, location=?, "
-            "serial_number=?, assigned_to=?, notes=? WHERE id=?",
+            "serial_number=?, assigned_to=?, notes=?, purchase_date=?, cost=?, "
+            "supplier=?, warranty_expiry=? WHERE id=?",
             (asset_no, a.name, a.description, a.category, a.location,
-             a.serial_number, a.assigned_to, a.notes, asset_id),
+             a.serial_number, a.assigned_to, a.notes, a.purchase_date, a.cost,
+             a.supplier, a.warranty_expiry, asset_id),
         )
+        _save_photo(conn, asset_id, a.photo)
         row = conn.execute("SELECT * FROM assets WHERE id=?", (asset_id,)).fetchone()
     return dict(row)
 
@@ -250,8 +283,44 @@ def update_asset(asset_id: int, a: Asset, user: dict = Depends(auth.current_user
 @app.delete("/api/assets/{asset_id}")
 def delete_asset(asset_id: int, user: dict = Depends(auth.current_user)):
     with database.db() as conn:
+        conn.execute("DELETE FROM asset_photos WHERE asset_id=?", (asset_id,))
         conn.execute("DELETE FROM assets WHERE id=?", (asset_id,))
     return {"ok": True}
+
+
+@app.get("/api/assets/{asset_id}/photo")
+def get_asset_photo(asset_id: int, user: dict = Depends(auth.current_user)):
+    with database.db() as conn:
+        row = conn.execute("SELECT data FROM asset_photos WHERE asset_id=?", (asset_id,)).fetchone()
+    if not row or not row["data"]:
+        raise HTTPException(404, "No photo")
+    data = row["data"]
+    if data.startswith("data:"):
+        try:
+            header, b64 = data.split(",", 1)
+            media = header.split(";")[0].replace("data:", "") or "image/jpeg"
+        except ValueError:
+            raise HTTPException(500, "Corrupt photo")
+        import base64
+        return Response(content=base64.b64decode(b64), media_type=media,
+                        headers={"Cache-Control": "no-cache"})
+    raise HTTPException(500, "Unsupported photo format")
+
+
+@app.get("/api/assets/{asset_id}/qr.svg")
+def get_asset_qr(asset_id: int, user: dict = Depends(auth.current_user)):
+    with database.db() as conn:
+        row = conn.execute("SELECT asset_no, name FROM assets WHERE id=?", (asset_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Asset not found")
+    import io
+    import segno
+    payload = f"ASSETIQ:{row['asset_no']}"
+    qr = segno.make(payload, error="m")
+    buf = io.BytesIO()
+    qr.save(buf, kind="svg", scale=1, border=2, dark="#111111", light=None)
+    return Response(content=buf.getvalue(), media_type="image/svg+xml",
+                    headers={"Cache-Control": "max-age=86400"})
 
 
 # ---------------------------------------------------------- compliance ------
@@ -331,13 +400,29 @@ def delete_compliance(item_id: int, user: dict = Depends(auth.current_user)):
 @app.get("/api/notifications")
 def notifications(user: dict = Depends(auth.current_user)):
     lead = _lead_days()
-    with database.db() as conn:
-        rows = conn.execute("SELECT * FROM compliance").fetchall()
     alerts = []
-    for r in rows:
-        d = _decorate_compliance(r, lead)
-        if d["status"] in ("expiring", "expired"):
-            alerts.append(d)
+    with database.db() as conn:
+        for r in conn.execute("SELECT * FROM compliance").fetchall():
+            d = _decorate_compliance(r, lead)
+            if d["status"] in ("expiring", "expired"):
+                alerts.append(d)
+        # warranties from the asset register feed the same dashboard
+        for r in conn.execute(
+            "SELECT id, asset_no, name, warranty_expiry FROM assets "
+            "WHERE warranty_expiry != ''").fetchall():
+            days = _days_until(r["warranty_expiry"])
+            status = _status(days, lead)
+            if status in ("expiring", "expired"):
+                alerts.append({
+                    "id": f"asset-{r['id']}",
+                    "name": f"Warranty · {r['name']}",
+                    "category": "warranty",
+                    "expiry_date": r["warranty_expiry"],
+                    "days_remaining": days,
+                    "days_until_expiry": days,
+                    "status": status,
+                    "reference": f"#{str(r['asset_no']).zfill(3)}",
+                })
     alerts.sort(key=lambda i: i["days_remaining"] if i["days_remaining"] is not None else 0)
     return {
         "lead_days": lead,
@@ -346,6 +431,43 @@ def notifications(user: dict = Depends(auth.current_user)):
         "expiring": sum(1 for a in alerts if a["status"] == "expiring"),
         "items": alerts,
     }
+
+
+# --------------------------------------------------------------- export -----
+def _csv_response(rows, fields, filename):
+    import csv
+    import io
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+    w.writeheader()
+    for r in rows:
+        w.writerow(r)
+    return Response(
+        content=buf.getvalue(), media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/export/assets.csv")
+def export_assets(user: dict = Depends(auth.current_user)):
+    with database.db() as conn:
+        rows = [dict(r) for r in conn.execute("SELECT * FROM assets ORDER BY asset_no").fetchall()]
+    fields = ["asset_no", "name", "category", "location", "assigned_to",
+              "serial_number", "supplier", "cost", "purchase_date",
+              "warranty_expiry", "description", "notes", "date_added"]
+    return _csv_response(rows, fields, "assetiq-assets.csv")
+
+
+@app.get("/api/export/compliance.csv")
+def export_compliance(user: dict = Depends(auth.current_user)):
+    lead = _lead_days()
+    with database.db() as conn:
+        rows = [_decorate_compliance(r, lead)
+                for r in conn.execute("SELECT * FROM compliance").fetchall()]
+    fields = ["name", "category", "reference", "responsible_person",
+              "expiry_date", "last_service_date", "next_service_date",
+              "status", "days_remaining", "notes"]
+    return _csv_response(rows, fields, "assetiq-compliance.csv")
 
 
 # ------------------------------------------------------------ settings ------

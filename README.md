@@ -72,6 +72,20 @@ It pulls the `main` branch zip, copies files over the running code (leaving
 `data/` untouched), bumps `VERSION`, and restarts the container on the new code.
 
 
+## What's in 1.3.0
+
+- **Asset photos** — snap or upload a picture per asset (auto-resized to keep the
+  database small). Thumbnail on the card; tap to view full-size.
+- **QR code labels** — the printed label sheet now includes a scannable QR per
+  asset (encodes `ASSETIQ:<number>`), alongside the number and name.
+- **Purchase & warranty** — purchase date, cost, supplier and warranty expiry.
+  Expiring/expired warranties automatically appear on the Overview dashboard
+  next to your licences and services.
+- **CSV export** — one-tap export of the asset register and the compliance
+  tracker (CSV buttons on each tab).
+- **Animated update screen** — progress ring, version flip (old → new), live
+  stages and shimmer bar while the update installs and the server restarts.
+
 ## Updating (how it works)
 
 **Settings → Software → Check for updates.** When an update is available you'll
