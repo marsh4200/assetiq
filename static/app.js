@@ -95,7 +95,7 @@ async function loadAssets() {
   }
   list.innerHTML = rows.map(a => `
     <div class="card asset">
-      <div class="tag">${String(a.id).padStart(3, '0')}</div>
+      <div class="tag">${String(a.asset_no).padStart(3, '0')}</div>
       <div class="meta">
         <div class="name">${esc(a.name)}</div>
         ${a.description ? `<div class="desc">${esc(a.description)}</div>` : ''}
@@ -116,25 +116,28 @@ async function loadAssets() {
 
 function openAsset(id) {
   const editing = id != null;
-  const get = editing ? API('/assets').then(r => r.find(x => x.id === id)) : Promise.resolve({});
+  const get = editing
+    ? API('/assets').then(r => r.find(x => x.id === id))
+    : API('/assets/next-number').then(r => ({ asset_no: r.next }));
   get.then(a => {
     a = a || {};
     $('#modal').innerHTML = `
       <div class="mhead">
-        <h3>${editing ? 'Edit asset #' + String(id).padStart(3, '0') : 'New asset'}</h3>
+        <h3>${editing ? 'Edit asset' : 'New asset'}</h3>
         <button class="iconbtn" onclick="closeModal()">✕</button>
       </div>
       <div class="mbody">
+        <div class="grid2">
+          <div class="field"><label>Label number</label><input id="f_asset_no" type="number" min="1" value="${a.asset_no ?? ''}"></div>
+          <div class="field"><label>Category</label><input id="f_category" value="${esc(a.category)}" placeholder="Furniture / Tool…"></div>
+        </div>
         <div class="field"><label>Name</label><input id="f_name" value="${esc(a.name)}" placeholder="e.g. Office chair – Roxanne"></div>
         <div class="field"><label>Description</label><input id="f_description" value="${esc(a.description)}"></div>
         <div class="grid2">
-          <div class="field"><label>Category</label><input id="f_category" value="${esc(a.category)}" placeholder="Furniture / Tool…"></div>
           <div class="field"><label>Location</label><input id="f_location" value="${esc(a.location)}"></div>
-        </div>
-        <div class="grid2">
-          <div class="field"><label>Serial number</label><input id="f_serial_number" value="${esc(a.serial_number)}"></div>
           <div class="field"><label>Assigned to</label><input id="f_assigned_to" value="${esc(a.assigned_to)}"></div>
         </div>
+        <div class="field"><label>Serial number</label><input id="f_serial_number" value="${esc(a.serial_number)}"></div>
         <div class="field"><label>Notes</label><textarea id="f_notes">${esc(a.notes)}</textarea></div>
       </div>
       <div class="mfoot">
@@ -150,6 +153,8 @@ async function saveAsset(id) {
   const body = {};
   ['name', 'description', 'category', 'location', 'serial_number', 'assigned_to', 'notes']
     .forEach(k => body[k] = $('#f_' + k).value.trim());
+  const noVal = $('#f_asset_no').value.trim();
+  body.asset_no = noVal ? parseInt(noVal, 10) : null;
   if (!body.name) { toast('Name is required', 'err'); return; }
   try {
     await API(id ? '/assets/' + id : '/assets',
@@ -159,7 +164,7 @@ async function saveAsset(id) {
 }
 
 async function deleteAsset(id) {
-  if (!confirm('Delete this asset? Its number stays retired and won\'t be reused.')) return;
+  if (!confirm('Delete this asset? Its label number frees up and can be reused.')) return;
   try { await API('/assets/' + id, { method: 'DELETE' }); closeModal(); toast('Asset deleted', 'ok'); loadAssets(); }
   catch (e) { toast(e.message, 'err'); }
 }
@@ -168,7 +173,7 @@ function printLabels() {
   API('/assets').then(rows => {
     if (!rows.length) { toast('No assets to print', 'err'); return; }
     $('#labelSheet').innerHTML = rows.map(a =>
-      `<div class="label"><div class="no">${String(a.id).padStart(3, '0')}</div><div class="nm">${esc(a.name)}</div></div>`
+      `<div class="label"><div class="no">${String(a.asset_no).padStart(3, '0')}</div><div class="nm">${esc(a.name)}</div></div>`
     ).join('');
     window.print();
   });
@@ -303,12 +308,148 @@ async function loadSettings() {
   gateAdminUI();
   if (ME && ME.role === 'admin') {
     loadUsers();
+    loadBackupConfig();
     try {
       const v = await API('/version');
       $('#verPill').textContent = 'v' + v.version;
       $('#repoLine').textContent = v.repo;
     } catch (e) {}
   }
+}
+
+/* -------------------------------------------------------------- backup ---- */
+async function loadBackupConfig() {
+  if (!ME || ME.role !== 'admin') return;
+  try {
+    const c = await API('/backup/config');
+    $('#bkDaily').checked = !!c.daily;
+    $('#bkHost').value = c.host || '';
+    $('#bkShare').value = c.share || '';
+    $('#bkPath').value = c.path || '';
+    $('#bkUser').value = c.user || '';
+    $('#bkPass').value = '';
+    $('#bkPass').placeholder = c.has_password ? '•••••• (saved)' : 'password';
+    $('#bkKeep').value = String(c.keep || 2);
+    renderBackupStatus(c);
+  } catch (e) {}
+}
+
+function renderBackupStatus(c) {
+  const el = $('#bkStatus');
+  if (!el) return;
+  let s = c.daily ? `On · daily · keep ${c.keep}` : 'Off — turn on for a daily copy';
+  if (c.last_backup_at) s += ` · last ${c.last_backup_at.replace('T', ' ').slice(0, 16)}`;
+  if (c.last_backup_status && /fail/i.test(c.last_backup_status)) s += ' ⚠';
+  el.textContent = s;
+}
+
+function backupPayload() {
+  return {
+    host: $('#bkHost').value.trim(),
+    share: $('#bkShare').value.trim(),
+    path: $('#bkPath').value.trim(),
+    user: $('#bkUser').value.trim(),
+    password: $('#bkPass').value,        // blank keeps existing
+    keep: parseInt($('#bkKeep').value, 10),
+    daily: $('#bkDaily').checked,
+  };
+}
+
+async function saveBackupConfig(announce) {
+  try {
+    const c = await API('/backup/config', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(backupPayload()),
+    });
+    $('#bkPass').value = '';
+    $('#bkPass').placeholder = c.has_password ? '•••••• (saved)' : 'password';
+    renderBackupStatus(c);
+    if (announce) toast('Backup settings saved', 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function testBackup() {
+  await saveBackupConfig(false);
+  toast('Testing connection…');
+  try {
+    const r = await API('/backup/test', { method: 'POST' });
+    toast(r.message, r.ok ? 'ok' : 'err');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function backupNow() {
+  await saveBackupConfig(false);
+  toast('Backing up…');
+  try {
+    const r = await API('/backup/now', { method: 'POST' });
+    toast(r.message, r.ok ? 'ok' : 'err');
+    if (r.ok) loadBackupConfig();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function triggerDownload(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name; document.body.appendChild(a); a.click();
+  a.remove(); URL.revokeObjectURL(url);
+}
+
+function downloadBackup() {
+  toast('Preparing download…');
+  fetch('/api/backup/download', { headers: { Authorization: 'Bearer ' + TOKEN } })
+    .then(r => { if (!r.ok) throw new Error('Download failed'); return r.blob(); })
+    .then(b => {
+      const d = new Date(), p = n => String(n).padStart(2, '0');
+      triggerDownload(b, `assetiq-backup-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.zip`);
+    })
+    .catch(e => toast(e.message, 'err'));
+}
+
+async function restoreFromFile(input) {
+  const file = input.files[0]; input.value = '';
+  if (!file) return;
+  if (!confirm(`Restore from "${file.name}"? This replaces ALL current data and signs everyone out.`)) return;
+  const fd = new FormData(); fd.append('file', file);
+  toast('Restoring…');
+  try {
+    const r = await fetch('/api/backup/restore', { method: 'POST', headers: { Authorization: 'Bearer ' + TOKEN }, body: fd });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || 'Restore failed');
+    toast(d.message || 'Restored — reloading', 'ok');
+    setTimeout(() => location.reload(), 1500);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function restoreFromShare() {
+  let list;
+  toast('Reading share…');
+  try { list = await API('/backup/list'); } catch (e) { toast(e.message, 'err'); return; }
+  if (!list.ok) { toast(list.message || 'Could not read the share', 'err'); return; }
+  if (!list.backups.length) { toast('No backups found on the share', 'err'); return; }
+  $('#modal').innerHTML = `
+    <div class="mhead"><h3>Restore from share</h3><button class="iconbtn" onclick="closeModal()">✕</button></div>
+    <div class="mbody">
+      <p style="color:var(--muted);font-size:13px;margin-top:0">Pick a backup. This replaces all current data and signs everyone out.</p>
+      ${list.backups.map(n => `
+        <div class="urow">
+          <div class="uinfo"><div class="un" style="font-family:var(--mono);font-size:13px">${esc(n.replace('assetiq-backup-', '').replace('.zip', ''))}</div></div>
+          <button class="btn small" onclick="doRestoreShare('${esc(n)}')">Restore</button>
+        </div>`).join('')}
+    </div>`;
+  $('#modalBg').classList.add('show');
+}
+
+async function doRestoreShare(filename) {
+  if (!confirm('Restore ' + filename + '? This replaces ALL current data.')) return;
+  toast('Restoring…');
+  try {
+    await API('/backup/restore-samba', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename }),
+    });
+    toast('Restored — reloading', 'ok');
+    setTimeout(() => location.reload(), 1500);
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 async function saveSetting(key, value) {
@@ -559,7 +700,7 @@ async function deleteUser(id) {
 /* --------------------------------------------------------------- boot ----- */
 function gateAdminUI() {
   const admin = ME && ME.role === 'admin';
-  ['usersLabel', 'usersCard', 'softwareLabel', 'updateCard'].forEach(idv => {
+  ['usersLabel', 'usersCard', 'backupLabel', 'backupCard', 'softwareLabel', 'updateCard'].forEach(idv => {
     const el = document.getElementById(idv);
     if (el) el.style.display = admin ? '' : 'none';
   });

@@ -4,12 +4,12 @@ FastAPI + SQLite, serves the vanilla-JS frontend from /static.
 import os
 from datetime import date, datetime
 
-from fastapi import FastAPI, HTTPException, Depends, Header
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Depends, Header, UploadFile, File
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import database, updater, auth
+from . import database, updater, auth, backup
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 STATIC_DIR = os.path.join(ROOT, "static")
@@ -21,11 +21,13 @@ app = FastAPI(title="AssetIQ")
 def _startup():
     database.init_db()
     auth.ensure_default_admin()
+    backup.start_scheduler()
 
 
 # ---------------------------------------------------------------- models -----
 class Asset(BaseModel):
     name: str
+    asset_no: int | None = None
     description: str = ""
     category: str = ""
     location: str = ""
@@ -70,6 +72,20 @@ class UserIn(BaseModel):
 class UserUpdateIn(BaseModel):
     role: str | None = None
     new_password: str | None = None
+
+
+class BackupConfigIn(BaseModel):
+    host: str | None = None
+    share: str | None = None
+    path: str | None = None
+    user: str | None = None
+    password: str | None = None
+    keep: int | None = None
+    daily: bool | None = None
+
+
+class RestoreSambaIn(BaseModel):
+    filename: str
 
 
 # ---------------------------------------------------------------- auth ------
@@ -164,6 +180,11 @@ def _lead_days():
 
 
 # -------------------------------------------------------------- assets ------
+@app.get("/api/assets/next-number")
+def next_asset_number(user: dict = Depends(auth.current_user)):
+    return {"next": database.next_free_asset_no()}
+
+
 @app.get("/api/assets")
 def list_assets(q: str = "", user: dict = Depends(auth.current_user)):
     with database.db() as conn:
@@ -172,21 +193,37 @@ def list_assets(q: str = "", user: dict = Depends(auth.current_user)):
             rows = conn.execute(
                 "SELECT * FROM assets WHERE name LIKE ? OR description LIKE ? "
                 "OR category LIKE ? OR location LIKE ? OR serial_number LIKE ? "
-                "OR assigned_to LIKE ? ORDER BY id",
+                "OR assigned_to LIKE ? ORDER BY asset_no",
                 (like, like, like, like, like, like),
             ).fetchall()
         else:
-            rows = conn.execute("SELECT * FROM assets ORDER BY id").fetchall()
+            rows = conn.execute("SELECT * FROM assets ORDER BY asset_no").fetchall()
     return [dict(r) for r in rows]
+
+
+def _resolve_asset_no(conn, requested, exclude_id=None):
+    """Validate a requested label number, or assign the next free one."""
+    if requested is None:
+        return database.next_free_asset_no()
+    if requested < 1:
+        raise HTTPException(400, "Label number must be 1 or higher")
+    clash = conn.execute(
+        "SELECT id FROM assets WHERE asset_no=? AND id IS NOT ?",
+        (requested, exclude_id),
+    ).fetchone()
+    if clash:
+        raise HTTPException(409, f"Label number {requested} is already used")
+    return requested
 
 
 @app.post("/api/assets")
 def create_asset(a: Asset, user: dict = Depends(auth.current_user)):
     with database.db() as conn:
+        asset_no = _resolve_asset_no(conn, a.asset_no)
         cur = conn.execute(
-            "INSERT INTO assets (name, description, category, location, "
-            "serial_number, assigned_to, notes) VALUES (?,?,?,?,?,?,?)",
-            (a.name, a.description, a.category, a.location,
+            "INSERT INTO assets (asset_no, name, description, category, location, "
+            "serial_number, assigned_to, notes) VALUES (?,?,?,?,?,?,?,?)",
+            (asset_no, a.name, a.description, a.category, a.location,
              a.serial_number, a.assigned_to, a.notes),
         )
         row = conn.execute("SELECT * FROM assets WHERE id=?", (cur.lastrowid,)).fetchone()
@@ -199,10 +236,11 @@ def update_asset(asset_id: int, a: Asset, user: dict = Depends(auth.current_user
         exists = conn.execute("SELECT id FROM assets WHERE id=?", (asset_id,)).fetchone()
         if not exists:
             raise HTTPException(404, "Asset not found")
+        asset_no = _resolve_asset_no(conn, a.asset_no, exclude_id=asset_id)
         conn.execute(
-            "UPDATE assets SET name=?, description=?, category=?, location=?, "
+            "UPDATE assets SET asset_no=?, name=?, description=?, category=?, location=?, "
             "serial_number=?, assigned_to=?, notes=? WHERE id=?",
-            (a.name, a.description, a.category, a.location,
+            (asset_no, a.name, a.description, a.category, a.location,
              a.serial_number, a.assigned_to, a.notes, asset_id),
         )
         row = conn.execute("SELECT * FROM assets WHERE id=?", (asset_id,)).fetchone()
@@ -336,6 +374,69 @@ def update_check(user: dict = Depends(auth.require_admin)):
 @app.post("/api/update")
 def update_now(user: dict = Depends(auth.require_admin)):
     return updater.update()
+
+
+# -------------------------------------------------------------- backup ------
+@app.get("/api/backup/config")
+def backup_config(user: dict = Depends(auth.require_admin)):
+    return backup.public_config()
+
+
+@app.put("/api/backup/config")
+def backup_config_save(cfg: BackupConfigIn, user: dict = Depends(auth.require_admin)):
+    return backup.save_config({k: v for k, v in cfg.model_dump().items() if v is not None})
+
+
+@app.post("/api/backup/test")
+def backup_test(user: dict = Depends(auth.require_admin)):
+    try:
+        backup.test_connection()
+        return {"ok": True, "message": "Connected to the share."}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@app.post("/api/backup/now")
+def backup_run(user: dict = Depends(auth.require_admin)):
+    return backup.backup_now(push=True)
+
+
+@app.get("/api/backup/download")
+def backup_download(user: dict = Depends(auth.require_admin)):
+    data = backup.make_backup_bytes()
+    name = backup.backup_filename()
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
+@app.get("/api/backup/list")
+def backup_list(user: dict = Depends(auth.require_admin)):
+    try:
+        return {"ok": True, "backups": backup.list_samba_backups()}
+    except Exception as e:
+        return {"ok": False, "backups": [], "message": str(e)}
+
+
+@app.post("/api/backup/restore")
+async def backup_restore(file: UploadFile = File(...), user: dict = Depends(auth.require_admin)):
+    data = await file.read()
+    try:
+        backup.restore_from_bytes(data)
+        return {"ok": True, "message": "Restored. Reloading…"}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/backup/restore-samba")
+def backup_restore_samba(body: RestoreSambaIn, user: dict = Depends(auth.require_admin)):
+    try:
+        backup.restore_from_samba(body.filename)
+        return {"ok": True, "message": "Restored from the share. Reloading…"}
+    except Exception as e:
+        raise HTTPException(400, str(e))
 
 
 # ---------------------------------------------------------- static SPA ------

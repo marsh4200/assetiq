@@ -36,6 +36,33 @@ The compose file bind-mounts the project directory, so in-app updates persist.
 The database lives in `./data/assetiq.db` and is gitignored. Keep the install
 directory put so updates land in the same place.
 
+## Asset label numbers
+
+Each asset has an editable **label number** (shown as `#001`). On *Add*, the form
+pre-fills the lowest free number — so if you delete `#001`, the next new asset is
+offered `001` again. You can also type any number yourself; duplicates are
+rejected. Internally the database keeps a separate hidden id, so renumbering
+never collides with history.
+
+## Backup (Samba)
+
+**Settings → Backup** (admin only):
+
+- Enter the Samba **host/IP**, **share**, optional **folder**, and credentials.
+- **Test connection** checks it's reachable.
+- **Daily auto-backup** pushes one zip per day to the share and keeps the newest
+  **N** (the "backups to keep" setting); the oldest rolls off. Set it to 2 for a
+  rotate-the-oldest-of-two pattern.
+- **Back up now** / **Download** / **Restore from file** / **Restore from share**
+  for on-demand use.
+
+A backup is a zip of the whole SQLite database (assets, tracker, users,
+settings). Restore validates the zip, swaps the database atomically, and reloads.
+The daily job runs inside the app — no cron needed.
+
+> Samba credentials are stored in the database in plain text (same as the rest of
+> the app's settings). Keep the host on your LAN / behind the tunnel.
+
 ## Updating
 
 1. Upload your changes to `marsh4200/assetiq` on GitHub and bump `VERSION`.
@@ -43,6 +70,24 @@ directory put so updates land in the same place.
 
 It pulls the `main` branch zip, copies files over the running code (leaving
 `data/` untouched), bumps `VERSION`, and restarts the container on the new code.
+
+## Backup & restore
+
+**Settings → Backup** (admin only). Point it at a Samba/SMB share and it keeps a
+rolling set of database backups.
+
+- **Daily backup** — toggle on. Once a day the app writes a timestamped
+  `assetiq-backup-YYYYMMDD-HHMMSS.zip` to the share.
+- **Keep copies** — rolling retention (default **2**). When a new backup pushes
+  the count past the limit, the oldest is deleted.
+- **Back up now** / **Download backup** — on-demand copy to the share, or
+  straight to your browser.
+- **Restore** — from an uploaded `.zip`, or from any backup listed on the share
+  (**Restore from share**). A restore replaces the whole database and signs
+  everyone out (the session lives in the database).
+
+The SMB password is stored in the local database and is never sent back to the
+browser once saved.
 
 ## Login & users
 
@@ -60,4 +105,6 @@ new password at first login.
 - Sessions are server-side tokens; "log out" revokes the token.
 - Behind a public Cloudflare tunnel this is now login-gated, but still put it
   behind Cloudflare Access too if you want a second layer.
+- Asset numbers are editable and reusable: the form suggests the smallest free
+  number (so a deleted `001` is offered again), but you can type any unused one.
 - Dates are stored as `YYYY-MM-DD`.

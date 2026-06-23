@@ -10,6 +10,17 @@ DEFAULT_SETTINGS = {
     "business_name": "ARSmartHome",
     "notify_lead_days": "60",      # ~2 months
     "theme": "dark",
+    # --- backup / samba ---
+    "smb_host": "",
+    "smb_share": "",
+    "smb_path": "",
+    "smb_user": "",
+    "smb_password": "",
+    "backup_keep": "2",
+    "backup_daily": "0",
+    "last_backup_at": "",
+    "last_backup_status": "",
+    "last_backup_date": "",
 }
 
 
@@ -89,6 +100,30 @@ def init_db():
             conn.execute(
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v)
             )
+
+        # --- migration: editable / reusable asset label number --------------
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(assets)").fetchall()}
+        if "asset_no" not in cols:
+            conn.execute("ALTER TABLE assets ADD COLUMN asset_no INTEGER")
+            # Backfill existing rows with their id so nothing renumbers.
+            conn.execute("UPDATE assets SET asset_no = id WHERE asset_no IS NULL")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_assets_no ON assets(asset_no)"
+        )
+
+
+def next_free_asset_no():
+    """Smallest positive integer not currently used as a label number.
+
+    Fills gaps, so a deleted 001 becomes the next suggestion again.
+    """
+    with db() as conn:
+        used = {r["asset_no"] for r in conn.execute(
+            "SELECT asset_no FROM assets WHERE asset_no IS NOT NULL").fetchall()}
+    n = 1
+    while n in used:
+        n += 1
+    return n
 
 
 def get_settings():

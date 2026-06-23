@@ -133,6 +133,42 @@
         </button>
       </div>
 
+      <div id="backupLabel" class="section-label" style="display:none">Backup</div>
+      <div id="backupCard" class="card" style="display:none">
+        <div class="set-row" style="padding-top:0">
+          <div class="info"><div class="t">Daily backup to Samba</div><div class="d" id="bkStatus">Off</div></div>
+          <div class="ctrl" style="min-width:auto">
+            <label class="switch"><input type="checkbox" id="bkDaily" onchange="saveBackupConfig()"><span class="track"></span></label>
+          </div>
+        </div>
+        <div class="field" style="margin-top:6px"><label>Samba host / address</label><input id="bkHost" placeholder="192.168.88.184 or nas.local"></div>
+        <div class="grid2">
+          <div class="field"><label>Share</label><input id="bkShare" placeholder="backups"></div>
+          <div class="field"><label>Folder in share</label><input id="bkPath" placeholder="AssetIQ"></div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Username</label><input id="bkUser" autocomplete="off" placeholder="optional"></div>
+          <div class="field"><label>Password</label><input id="bkPass" type="password" autocomplete="new-password" placeholder="leave blank to keep"></div>
+        </div>
+        <div class="field" style="max-width:160px"><label>Keep copies</label>
+          <select id="bkKeep">
+            <option value="1">1</option><option value="2" selected>2</option>
+            <option value="3">3</option><option value="5">5</option><option value="7">7</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
+          <button class="btn ghost small" onclick="saveBackupConfig(true)">Save settings</button>
+          <button class="btn ghost small" onclick="testBackup()">Test connection</button>
+          <button class="btn small" onclick="backupNow()">Back up now</button>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+          <button class="btn ghost small" onclick="downloadBackup()">Download backup</button>
+          <button class="btn ghost small" onclick="document.getElementById('restoreFile').click()">Restore from file…</button>
+          <button class="btn ghost small" onclick="restoreFromShare()">Restore from share</button>
+          <input type="file" id="restoreFile" accept=".zip,.db" style="display:none" onchange="restoreFromFile(this)">
+        </div>
+      </div>
+
       <div id="softwareLabel" class="section-label">Software</div>
       <div id="updateCard" class="card">
         <div class="set-row">
