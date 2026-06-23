@@ -72,6 +72,22 @@ It pulls the `main` branch zip, copies files over the running code (leaving
 `data/` untouched), bumps `VERSION`, and restarts the container on the new code.
 
 
+## What's in 1.4.0
+
+- **Checks tab** — run checklists from your phone. Ships with a **Truck — Daily
+  Vehicle Check** (18-point pre-trip) the driver completes each morning: each
+  item is Pass / Fail / N-A with an optional note, plus driver name and odometer.
+- **Failures flag the dashboard** — any check submitted with failed items shows
+  up red on the Overview for 14 days, with the driver and date.
+- **Templates** (admin only) — build/edit checklists: name, description, one item
+  per line, optional odometer prompt, active toggle. Records are kept as history
+  per template (tap History on a checklist).
+- **Search by label number** — typing `001`, `01` or `1` in the Assets search now
+  finds asset #001, as well as searching names, serials and suppliers.
+
+Drivers can be plain **User** accounts: they can run checks and see history, but
+only admins build templates.
+
 ## What's in 1.3.0
 
 - **Asset photos** — snap or upload a picture per asset (auto-resized to keep the

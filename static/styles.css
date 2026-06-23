@@ -296,6 +296,20 @@ label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 5px;
 .warranty-chip.valid    { color: var(--valid);    border-color: color-mix(in srgb, var(--valid) 45%, transparent); }
 .warranty-chip.expiring { color: var(--expiring); border-color: color-mix(in srgb, var(--expiring) 45%, transparent); }
 .warranty-chip.expired  { color: var(--expired);  border-color: color-mix(in srgb, var(--expired) 45%, transparent); }
+
+/* checklist run items */
+.run-item { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+            padding: 10px 0; border-bottom: 1px solid var(--line); }
+.run-item .run-label { flex: 1; min-width: 130px; font-size: 14px; }
+.run-item.row-fail .run-label { color: var(--expired); }
+.run-note { flex-basis: 100%; margin-top: 6px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; flex: 0 0 auto; }
+.seg-btn { background: var(--surface-2); color: var(--muted); border: 0; padding: 7px 12px;
+           font-size: 13px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--line); }
+.seg-btn:last-child { border-right: 0; }
+.seg-btn.pass.on { background: color-mix(in srgb, var(--valid) 22%, transparent); color: var(--valid); }
+.seg-btn.fail.on { background: color-mix(in srgb, var(--expired) 22%, transparent); color: var(--expired); }
+.seg-btn.na.on   { background: var(--surface-2); color: var(--text); }
 .auth-box {
   width: 100%; max-width: 380px; background: var(--surface);
   border: 1px solid var(--line); border-radius: 18px; padding: 28px 24px;

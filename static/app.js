@@ -19,7 +19,7 @@ const esc = s => (s ?? '').toString().replace(/[&<>"']/g, c =>
 const CATS = {
   licence: 'Licence', fire_extinguisher: 'Fire Extinguisher', software: 'Software',
   antivirus: 'Antivirus', vehicle: 'Vehicle', machine: 'Machine Service',
-  certificate: 'Certificate', other: 'Other',
+  certificate: 'Certificate', warranty: 'Warranty', checklist: 'Checklist', other: 'Other',
 };
 const catLabel = c => CATS[c] || 'Other';
 
@@ -35,6 +35,7 @@ function go(tab) {
   if (tab === 'dashboard')  loadDashboard();
   if (tab === 'assets')     loadAssets();
   if (tab === 'compliance') loadComp();
+  if (tab === 'checklists') loadChecklists();
   if (tab === 'settings')   loadSettings();
 }
 
@@ -446,6 +447,213 @@ async function loadSettings() {
       $('#repoLine').textContent = v.repo;
     } catch (e) {}
   }
+}
+
+/* ----------------------------------------------------------- checklists --- */
+let CL_TEMPLATES = [];
+
+async function loadChecklists() {
+  $('#newTplBtn').style.display = (ME && ME.role === 'admin') ? '' : 'none';
+  const list = $('#checklistList');
+  try {
+    CL_TEMPLATES = await API('/checklists/templates' + (ME && ME.role === 'admin' ? '?all=true' : ''));
+  } catch (e) { return; }
+  if (!CL_TEMPLATES.length) {
+    list.innerHTML = emptyState('check', 'No checklists yet',
+      ME && ME.role === 'admin' ? 'Tap “Template” to create one.' : 'An admin needs to add a checklist.');
+    return;
+  }
+  list.innerHTML = CL_TEMPLATES.map(t => `
+    <div class="card">
+      <div style="display:flex;align-items:flex-start;gap:10px">
+        <div style="flex:1;min-width:0">
+          <div class="name" style="font-weight:600;font-size:16px">${esc(t.name)}${t.active ? '' : ' <span class="chip">inactive</span>'}</div>
+          ${t.description ? `<div class="desc" style="color:var(--muted);font-size:13px;margin-top:2px">${esc(t.description)}</div>` : ''}
+          <div class="chips" style="margin-top:6px"><span class="chip">${t.items.length} items</span></div>
+        </div>
+        ${ME && ME.role === 'admin' ? `<button class="iconbtn" onclick='openTemplate(${t.id})' title="Edit template">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
+        </button>` : ''}
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn" style="flex:1" onclick="startRun(${t.id})">Start check</button>
+        <button class="btn ghost" onclick="viewHistory(${t.id})">History</button>
+      </div>
+    </div>`).join('');
+}
+
+/* ---- run a checklist ---- */
+function startRun(tplId) {
+  const t = CL_TEMPLATES.find(x => x.id === tplId);
+  if (!t) return;
+  $('#modal').innerHTML = `
+    <div class="mhead"><h3>${esc(t.name)}</h3><button class="iconbtn" onclick="closeModal()">✕</button></div>
+    <div class="mbody">
+      <div class="field"><label>Driver name</label><input id="run_driver" placeholder="Who's doing this check?"></div>
+      ${t.ask_odometer ? `<div class="field"><label>Odometer</label><input id="run_odo" inputmode="numeric" placeholder="km"></div>` : ''}
+      <div class="section-label" style="margin:14px 0 8px;font-size:12px">Items — mark each</div>
+      <div id="runItems">
+        ${t.items.map(it => `
+          <div class="run-item" data-item="${it.id}">
+            <div class="run-label">${esc(it.label)}</div>
+            <div class="seg">
+              <button type="button" class="seg-btn pass" onclick="setItem('${it.id}','pass')">Pass</button>
+              <button type="button" class="seg-btn fail" onclick="setItem('${it.id}','fail')">Fail</button>
+              <button type="button" class="seg-btn na"   onclick="setItem('${it.id}','na')">N/A</button>
+            </div>
+            <input class="run-note" id="note_${it.id}" placeholder="Note (optional)" style="display:none">
+          </div>`).join('')}
+      </div>
+      <div class="field" style="margin-top:12px"><label>General notes</label><textarea id="run_notes"></textarea></div>
+      <div class="numhint" id="runHint">Tip: tap Pass on everything, then flip any that fail.</div>
+    </div>
+    <div class="mfoot">
+      <button class="btn ghost" onclick="markAllPass()">All pass</button>
+      <button class="btn" onclick="submitRun(${tplId})">Submit check</button>
+    </div>`;
+  RUN_RESULTS = {};
+  $('#modalBg').classList.add('show');
+  setTimeout(() => $('#run_driver').focus(), 60);
+}
+
+let RUN_RESULTS = {};
+function setItem(itemId, status) {
+  RUN_RESULTS[itemId] = Object.assign({}, RUN_RESULTS[itemId], { status });
+  const row = document.querySelector(`.run-item[data-item="${itemId}"]`);
+  row.querySelectorAll('.seg-btn').forEach(b => b.classList.remove('on'));
+  row.querySelector('.seg-btn.' + status).classList.add('on');
+  row.classList.toggle('row-fail', status === 'fail');
+  const note = $('#note_' + itemId);
+  note.style.display = status === 'fail' ? 'block' : note.style.display;
+}
+function markAllPass() {
+  document.querySelectorAll('.run-item').forEach(row => setItem(row.getAttribute('data-item'), 'pass'));
+}
+
+async function submitRun(tplId) {
+  const driver = $('#run_driver').value.trim();
+  if (!driver) { toast('Driver name is required', 'err'); return; }
+  const t = CL_TEMPLATES.find(x => x.id === tplId);
+  // collect notes into results
+  const results = {};
+  t.items.forEach(it => {
+    const r = RUN_RESULTS[it.id] || {};
+    const note = ($('#note_' + it.id) || {}).value || '';
+    results[it.id] = { status: r.status || 'pass', note: note.trim(), label: it.label };
+  });
+  const fails = Object.values(results).filter(r => r.status === 'fail').length;
+  const body = {
+    template_id: tplId, driver_name: driver,
+    odometer: ($('#run_odo') || {}).value || '',
+    results, notes: $('#run_notes').value.trim(),
+  };
+  try {
+    await API('/checklists/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    closeModal();
+    toast(fails ? `Submitted — ${fails} issue${fails !== 1 ? 's' : ''} flagged on the dashboard` : 'Check submitted — all good', fails ? 'err' : 'ok');
+    refreshBell();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/* ---- history ---- */
+async function viewHistory(tplId) {
+  const t = CL_TEMPLATES.find(x => x.id === tplId);
+  let runs;
+  try { runs = await API('/checklists/runs?template_id=' + tplId); } catch (e) { toast(e.message, 'err'); return; }
+  $('#modal').innerHTML = `
+    <div class="mhead"><h3>History</h3><button class="iconbtn" onclick="closeModal()">✕</button></div>
+    <div class="mbody">
+      ${!runs.length ? '<p style="color:var(--muted)">No checks recorded yet.</p>' :
+        runs.map(r => `
+          <div class="urow" onclick='viewRun(${r.id})' style="cursor:pointer">
+            <div class="uava" style="color:${r.fail_count ? 'var(--expired)' : 'var(--valid)'}">${r.fail_count ? '!' : '✓'}</div>
+            <div class="uinfo">
+              <div class="un">${esc(r.driver_name)}</div>
+              <div class="ur">${r.created_at.replace('T', ' ').slice(0, 16)}${r.fail_count ? ' · ' + r.fail_count + ' issue' + (r.fail_count !== 1 ? 's' : '') : ' · all pass'}</div>
+            </div>
+          </div>`).join('')}
+    </div>`;
+  $('#modalBg').classList.add('show');
+}
+
+async function viewRun(runId) {
+  let r;
+  try { r = await API('/checklists/runs/' + runId); } catch (e) { toast(e.message, 'err'); return; }
+  const items = Object.values(r.results || {});
+  const badge = s => `<span class="status ${s === 'fail' ? 'expired' : s === 'na' ? 'none' : 'valid'}">${s === 'na' ? 'N/A' : s}</span>`;
+  $('#modal').innerHTML = `
+    <div class="mhead"><h3>${esc(r.driver_name)}</h3><button class="iconbtn" onclick="closeModal()">✕</button></div>
+    <div class="mbody">
+      <div class="ur" style="color:var(--muted);font-size:13px;margin-bottom:10px">
+        ${r.created_at.replace('T', ' ').slice(0, 16)}${r.odometer ? ' · ' + esc(r.odometer) + ' km' : ''}
+      </div>
+      ${items.map(it => `
+        <div class="run-item" style="border:0;padding:8px 0">
+          <div class="run-label">${esc(it.label || '')}</div>
+          ${badge(it.status)}
+          ${it.note ? `<div style="flex-basis:100%;color:var(--muted);font-size:12px;margin-top:2px">${esc(it.note)}</div>` : ''}
+        </div>`).join('')}
+      ${r.notes ? `<div class="field" style="margin-top:12px"><label>Notes</label><div>${esc(r.notes)}</div></div>` : ''}
+    </div>
+    ${ME && ME.role === 'admin' ? `<div class="mfoot"><button class="btn danger" onclick="deleteRun(${runId})">Delete record</button></div>` : ''}`;
+  $('#modalBg').classList.add('show');
+}
+
+async function deleteRun(runId) {
+  if (!confirm('Delete this check record?')) return;
+  try { await API('/checklists/runs/' + runId, { method: 'DELETE' }); closeModal(); toast('Deleted', 'ok'); refreshBell(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+
+/* ---- admin: template editor ---- */
+function openTemplate(id) {
+  const editing = id != null;
+  const t = editing ? CL_TEMPLATES.find(x => x.id === id) : { name: '', description: '', items: [], ask_odometer: true, active: true };
+  const itemsText = (t.items || []).map(i => i.label).join('\n');
+  $('#modal').innerHTML = `
+    <div class="mhead"><h3>${editing ? 'Edit template' : 'New template'}</h3><button class="iconbtn" onclick="closeModal()">✕</button></div>
+    <div class="mbody">
+      <div class="field"><label>Name</label><input id="tpl_name" value="${esc(t.name)}" placeholder="e.g. Truck — Daily Vehicle Check"></div>
+      <div class="field"><label>Description</label><input id="tpl_desc" value="${esc(t.description)}"></div>
+      <div class="field"><label>Checklist items (one per line)</label><textarea id="tpl_items" style="min-height:200px">${esc(itemsText)}</textarea></div>
+      <div class="set-row" style="border:0;padding:6px 0">
+        <div class="info"><div class="t">Ask for odometer</div></div>
+        <div class="ctrl" style="min-width:auto"><label class="switch"><input type="checkbox" id="tpl_odo" ${t.ask_odometer ? 'checked' : ''}><span class="track"></span></label></div>
+      </div>
+      <div class="set-row" style="border:0;padding:6px 0">
+        <div class="info"><div class="t">Active</div><div class="d">Show this checklist to drivers</div></div>
+        <div class="ctrl" style="min-width:auto"><label class="switch"><input type="checkbox" id="tpl_active" ${t.active ? 'checked' : ''}><span class="track"></span></label></div>
+      </div>
+    </div>
+    <div class="mfoot">
+      ${editing ? `<button class="btn danger" onclick="deleteTemplate(${id})">Delete</button>` : ''}
+      <button class="btn" onclick="saveTemplate(${editing ? id : 'null'})">Save</button>
+    </div>`;
+  $('#modalBg').classList.add('show');
+}
+
+async function saveTemplate(id) {
+  const items = $('#tpl_items').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const body = {
+    name: $('#tpl_name').value.trim(),
+    description: $('#tpl_desc').value.trim(),
+    items,
+    ask_odometer: $('#tpl_odo').checked,
+    active: $('#tpl_active').checked,
+  };
+  if (!body.name) { toast('Name is required', 'err'); return; }
+  if (!items.length) { toast('Add at least one item', 'err'); return; }
+  try {
+    await API(id ? '/checklists/templates/' + id : '/checklists/templates',
+      { method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    closeModal(); toast(id ? 'Template saved' : 'Template created', 'ok'); loadChecklists();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function deleteTemplate(id) {
+  if (!confirm('Delete this template? Past records stay, but the checklist disappears.')) return;
+  try { await API('/checklists/templates/' + id, { method: 'DELETE' }); closeModal(); toast('Template deleted', 'ok'); loadChecklists(); }
+  catch (e) { toast(e.message, 'err'); }
 }
 
 /* -------------------------------------------------------------- backup ---- */

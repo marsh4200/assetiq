@@ -130,6 +130,73 @@ def init_db():
                )"""
         )
 
+        # --- checklists -----------------------------------------------------
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS checklist_templates (
+                   id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                   name        TEXT NOT NULL,
+                   description TEXT DEFAULT '',
+                   items       TEXT NOT NULL DEFAULT '[]',
+                   ask_odometer INTEGER DEFAULT 0,
+                   active      INTEGER DEFAULT 1,
+                   created_at  TEXT DEFAULT (datetime('now'))
+               )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS checklist_runs (
+                   id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                   template_id   INTEGER,
+                   template_name TEXT,
+                   driver_name   TEXT,
+                   odometer      TEXT DEFAULT '',
+                   results       TEXT NOT NULL DEFAULT '{}',
+                   notes         TEXT DEFAULT '',
+                   fail_count    INTEGER DEFAULT 0,
+                   created_at    TEXT DEFAULT (datetime('now'))
+               )"""
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_created ON checklist_runs(created_at)"
+        )
+
+
+import json as _json
+
+DEFAULT_VEHICLE_ITEMS = [
+    "Tyres & wheel nuts — condition and pressure",
+    "Lights, indicators & hazards — all working",
+    "Brakes — foot & hand brake",
+    "Mirrors — clean & adjusted",
+    "Windscreen & wipers — clean, no cracks",
+    "Engine oil level",
+    "Coolant / water level",
+    "Fuel level",
+    "Hooter / horn",
+    "Seatbelts — working",
+    "Licence disc — valid & displayed",
+    "Number plates — clean & visible",
+    "Fire extinguisher — present & charged",
+    "First aid kit — present",
+    "Warning triangle — present",
+    "Fluid leaks — none under vehicle",
+    "Body damage — note any new damage",
+    "Load secured & within limit",
+]
+
+
+def ensure_default_checklist():
+    with db() as conn:
+        n = conn.execute("SELECT COUNT(*) c FROM checklist_templates").fetchone()["c"]
+        if n == 0:
+            items = [{"id": f"i{i+1}", "label": lbl} for i, lbl in enumerate(DEFAULT_VEHICLE_ITEMS)]
+            conn.execute(
+                "INSERT INTO checklist_templates (name, description, items, ask_odometer) "
+                "VALUES (?,?,?,1)",
+                ("Truck — Daily Vehicle Check",
+                 "Basic pre-trip inspection to be done each morning before driving.",
+                 _json.dumps(items)),
+            )
+
 
 def next_free_asset_no():
     """Smallest positive integer not currently used as a label number.

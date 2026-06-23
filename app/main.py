@@ -1,6 +1,7 @@
 """AssetIQ — asset register + licence/compliance expiry tracker.
 FastAPI + SQLite, serves the vanilla-JS frontend from /static.
 """
+import json
 import os
 from datetime import date, datetime
 
@@ -21,6 +22,7 @@ app = FastAPI(title="AssetIQ")
 def _startup():
     database.init_db()
     auth.ensure_default_admin()
+    database.ensure_default_checklist()
     backup.start_scheduler()
 
 
@@ -77,6 +79,22 @@ class UserIn(BaseModel):
 class UserUpdateIn(BaseModel):
     role: str | None = None
     new_password: str | None = None
+
+
+class ChecklistTemplateIn(BaseModel):
+    name: str
+    description: str = ""
+    items: list = []
+    ask_odometer: bool = False
+    active: bool = True
+
+
+class ChecklistRunIn(BaseModel):
+    template_id: int | None = None
+    driver_name: str
+    odometer: str = ""
+    results: dict = {}
+    notes: str = ""
 
 
 class BackupConfigIn(BaseModel):
@@ -192,16 +210,20 @@ def next_asset_number(user: dict = Depends(auth.current_user)):
 
 @app.get("/api/assets")
 def list_assets(q: str = "", user: dict = Depends(auth.current_user)):
+    q = q.strip()
     with database.db() as conn:
         if q:
             like = f"%{q}%"
-            rows = conn.execute(
-                "SELECT * FROM assets WHERE name LIKE ? OR description LIKE ? "
-                "OR category LIKE ? OR location LIKE ? OR serial_number LIKE ? "
-                "OR assigned_to LIKE ? OR supplier LIKE ? OR CAST(asset_no AS TEXT) LIKE ? "
-                "ORDER BY asset_no",
-                (like, like, like, like, like, like, like, like),
-            ).fetchall()
+            params = [like] * 8
+            sql = ("SELECT * FROM assets WHERE name LIKE ? OR description LIKE ? "
+                   "OR category LIKE ? OR location LIKE ? OR serial_number LIKE ? "
+                   "OR assigned_to LIKE ? OR supplier LIKE ? OR CAST(asset_no AS TEXT) LIKE ?")
+            # "001" / "01" / "1" should all match label number 1 exactly.
+            if q.isdigit():
+                sql += " OR asset_no = ?"
+                params.append(int(q))
+            sql += " ORDER BY asset_no"
+            rows = conn.execute(sql, params).fetchall()
         else:
             rows = conn.execute("SELECT * FROM assets ORDER BY asset_no").fetchall()
         with_photos = {r["asset_id"] for r in conn.execute(
@@ -423,6 +445,21 @@ def notifications(user: dict = Depends(auth.current_user)):
                     "status": status,
                     "reference": f"#{str(r['asset_no']).zfill(3)}",
                 })
+        # recent failed checklists (last 14 days) flag up red on the dashboard
+        for r in conn.execute(
+            "SELECT id, template_name, driver_name, fail_count, created_at "
+            "FROM checklist_runs WHERE fail_count > 0 "
+            "AND created_at >= datetime('now','-14 days') ORDER BY id DESC").fetchall():
+            alerts.append({
+                "id": f"check-{r['id']}",
+                "run_id": r["id"],
+                "name": f"{r['template_name'] or 'Checklist'} — {r['fail_count']} issue"
+                        f"{'s' if r['fail_count'] != 1 else ''}",
+                "category": "checklist",
+                "status": "expired",     # red styling
+                "days_remaining": None,
+                "reference": f"{r['driver_name']} · {r['created_at'][:10]}",
+            })
     alerts.sort(key=lambda i: i["days_remaining"] if i["days_remaining"] is not None else 0)
     return {
         "lead_days": lead,
@@ -468,6 +505,142 @@ def export_compliance(user: dict = Depends(auth.current_user)):
               "expiry_date", "last_service_date", "next_service_date",
               "status", "days_remaining", "notes"]
     return _csv_response(rows, fields, "assetiq-compliance.csv")
+
+
+# ------------------------------------------------------------ checklists ----
+def _template_out(row):
+    d = dict(row)
+    try:
+        d["items"] = json.loads(d.get("items") or "[]")
+    except json.JSONDecodeError:
+        d["items"] = []
+    d["ask_odometer"] = bool(d.get("ask_odometer"))
+    d["active"] = bool(d.get("active"))
+    return d
+
+
+@app.get("/api/checklists/templates")
+def list_templates(all: bool = False, user: dict = Depends(auth.current_user)):
+    with database.db() as conn:
+        if all and user["role"] == "admin":
+            rows = conn.execute("SELECT * FROM checklist_templates ORDER BY name").fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM checklist_templates WHERE active=1 ORDER BY name").fetchall()
+    return [_template_out(r) for r in rows]
+
+
+def _normalise_items(items):
+    out = []
+    for i, it in enumerate(items):
+        if isinstance(it, str):
+            label = it.strip()
+            iid = f"i{i+1}"
+        else:
+            label = str(it.get("label", "")).strip()
+            iid = str(it.get("id") or f"i{i+1}")
+        if label:
+            out.append({"id": iid, "label": label})
+    return out
+
+
+@app.post("/api/checklists/templates")
+def create_template(t: ChecklistTemplateIn, user: dict = Depends(auth.require_admin)):
+    items = _normalise_items(t.items)
+    if not t.name.strip():
+        raise HTTPException(400, "Template needs a name")
+    with database.db() as conn:
+        cur = conn.execute(
+            "INSERT INTO checklist_templates (name, description, items, ask_odometer, active) "
+            "VALUES (?,?,?,?,?)",
+            (t.name.strip(), t.description, json.dumps(items),
+             1 if t.ask_odometer else 0, 1 if t.active else 0),
+        )
+        row = conn.execute("SELECT * FROM checklist_templates WHERE id=?", (cur.lastrowid,)).fetchone()
+    return _template_out(row)
+
+
+@app.put("/api/checklists/templates/{tpl_id}")
+def update_template(tpl_id: int, t: ChecklistTemplateIn, user: dict = Depends(auth.require_admin)):
+    items = _normalise_items(t.items)
+    with database.db() as conn:
+        if not conn.execute("SELECT id FROM checklist_templates WHERE id=?", (tpl_id,)).fetchone():
+            raise HTTPException(404, "Template not found")
+        conn.execute(
+            "UPDATE checklist_templates SET name=?, description=?, items=?, ask_odometer=?, active=? WHERE id=?",
+            (t.name.strip(), t.description, json.dumps(items),
+             1 if t.ask_odometer else 0, 1 if t.active else 0, tpl_id),
+        )
+        row = conn.execute("SELECT * FROM checklist_templates WHERE id=?", (tpl_id,)).fetchone()
+    return _template_out(row)
+
+
+@app.delete("/api/checklists/templates/{tpl_id}")
+def delete_template(tpl_id: int, user: dict = Depends(auth.require_admin)):
+    with database.db() as conn:
+        conn.execute("DELETE FROM checklist_templates WHERE id=?", (tpl_id,))
+    return {"ok": True}
+
+
+def _run_out(row):
+    d = dict(row)
+    try:
+        d["results"] = json.loads(d.get("results") or "{}")
+    except json.JSONDecodeError:
+        d["results"] = {}
+    return d
+
+
+@app.get("/api/checklists/runs")
+def list_runs(template_id: int | None = None, limit: int = 50, user: dict = Depends(auth.current_user)):
+    limit = max(1, min(200, limit))
+    with database.db() as conn:
+        if template_id:
+            rows = conn.execute(
+                "SELECT * FROM checklist_runs WHERE template_id=? ORDER BY id DESC LIMIT ?",
+                (template_id, limit)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM checklist_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [_run_out(r) for r in rows]
+
+
+@app.get("/api/checklists/runs/{run_id}")
+def get_run(run_id: int, user: dict = Depends(auth.current_user)):
+    with database.db() as conn:
+        row = conn.execute("SELECT * FROM checklist_runs WHERE id=?", (run_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Run not found")
+    return _run_out(row)
+
+
+@app.post("/api/checklists/runs")
+def submit_run(r: ChecklistRunIn, user: dict = Depends(auth.current_user)):
+    if not r.driver_name.strip():
+        raise HTTPException(400, "Driver name is required")
+    tpl_name = ""
+    if r.template_id:
+        with database.db() as conn:
+            t = conn.execute("SELECT name FROM checklist_templates WHERE id=?", (r.template_id,)).fetchone()
+            tpl_name = t["name"] if t else ""
+    fails = sum(1 for v in r.results.values()
+                if isinstance(v, dict) and v.get("status") == "fail")
+    with database.db() as conn:
+        cur = conn.execute(
+            "INSERT INTO checklist_runs (template_id, template_name, driver_name, odometer, results, notes, fail_count) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (r.template_id, tpl_name, r.driver_name.strip(), r.odometer,
+             json.dumps(r.results), r.notes, fails),
+        )
+        row = conn.execute("SELECT * FROM checklist_runs WHERE id=?", (cur.lastrowid,)).fetchone()
+    return _run_out(row)
+
+
+@app.delete("/api/checklists/runs/{run_id}")
+def delete_run(run_id: int, user: dict = Depends(auth.require_admin)):
+    with database.db() as conn:
+        conn.execute("DELETE FROM checklist_runs WHERE id=?", (run_id,))
+    return {"ok": True}
 
 
 # ------------------------------------------------------------ settings ------
