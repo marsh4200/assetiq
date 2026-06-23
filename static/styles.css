@@ -326,6 +326,62 @@ label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 5px;
 .hist-line b { font-family: var(--mono); color: var(--valid); }
 .hist-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
 .hist-note { font-size: 13px; margin-top: 4px; }
+
+/* ---------------------------------------------------------- reports ------ */
+.report-overlay { position: fixed; inset: 0; z-index: 75; background: rgba(0,0,0,.6);
+                  display: none; flex-direction: column; }
+.report-overlay.show { display: flex; }
+.report-bar { display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+              background: var(--surface); border-bottom: 1px solid var(--line); }
+.report-bar .spacer { flex: 1; }
+.report-scroll { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 16px; }
+.report-page { background: #fff; color: #1a1a1a; max-width: 800px; margin: 0 auto;
+               padding: 28px 30px; border-radius: 8px; box-shadow: 0 6px 30px rgba(0,0,0,.4);
+               font-family: var(--body); line-height: 1.5; }
+.report-page * { color: inherit; }
+.rpt-head { display: flex; justify-content: space-between; align-items: flex-start;
+            border-bottom: 2px solid #1a1a1a; padding-bottom: 12px; margin-bottom: 18px; }
+.rpt-biz { font-weight: 700; font-size: 18px; }
+.rpt-title { font-family: var(--disp); text-transform: uppercase; letter-spacing: .04em;
+             font-size: 26px; font-weight: 600; margin-top: 2px; }
+.rpt-sub { color: #555; font-size: 14px; margin-top: 2px; }
+.rpt-stamp { text-align: right; font-size: 11px; color: #777; line-height: 1.4; }
+.rpt-asset { display: flex; gap: 24px; flex-wrap: wrap; }
+.rpt-asset-main { flex: 1; min-width: 240px; }
+.rpt-side { width: 180px; flex: 0 0 auto; text-align: center; }
+.rpt-bignum { font-family: var(--mono); font-weight: 700; font-size: 30px; }
+.rpt-name { font-size: 20px; font-weight: 600; margin: 2px 0 16px; }
+.rpt-photo { width: 100%; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 14px; }
+.rpt-qr { width: 130px; margin: 0 auto; }
+.rpt-qr svg { width: 130px; height: 130px; }
+.rpt-qrlabel { font-family: var(--mono); font-weight: 700; margin-top: 4px; }
+.rpt-table { width: 100%; border-collapse: collapse; margin: 6px 0; }
+.rpt-table th, .rpt-table td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #eee; font-size: 14px; vertical-align: top; }
+.rpt-table th { width: 38%; color: #555; font-weight: 600; }
+.rpt-block { margin-top: 18px; }
+.rpt-block h3 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: #555; margin: 0 0 6px; }
+.rpt-group { font-family: var(--disp); text-transform: uppercase; letter-spacing: .03em;
+             font-size: 16px; margin: 22px 0 8px; padding-bottom: 4px; border-bottom: 1px solid #ccc; }
+.rpt-list { width: 100%; border-collapse: collapse; }
+.rpt-list th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+               color: #666; border-bottom: 2px solid #ccc; padding: 6px 8px; }
+.rpt-list td { font-size: 13px; padding: 6px 8px; border-bottom: 1px solid #eee; }
+.rpt-list td.mono, .report-page .mono { font-family: var(--mono); }
+.rpt-statusline { margin-bottom: 14px; }
+.rpt-badge { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 10px; border-radius: 999px;
+             border: 1px solid; }
+.rpt-badge.ok { color: #1a7a44; border-color: #1a7a44; background: #e8f6ee; }
+.rpt-badge.warn { color: #9a6a00; border-color: #9a6a00; background: #fdf3df; }
+.rpt-badge.bad { color: #b22; border-color: #b22; background: #fbeaea; }
+
+@media print {
+  body.report-open > *:not(.report-overlay) { display: none !important; }
+  .report-overlay { position: static; background: #fff; }
+  .report-bar { display: none !important; }
+  .report-scroll { overflow: visible; padding: 0; }
+  .report-page { box-shadow: none; border-radius: 0; max-width: none; padding: 0; }
+  .rpt-group, .rpt-asset, tr { page-break-inside: avoid; }
+}
 .auth-box {
   width: 100%; max-width: 380px; background: var(--surface);
   border: 1px solid var(--line); border-radius: 18px; padding: 28px 24px;

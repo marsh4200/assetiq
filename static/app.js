@@ -84,25 +84,18 @@ async function loadDashboard() {
 }
 
 /* ------------------------------------------------------------ assets ------ */
-async function loadAssets() {
-  const q = $('#assetSearch').value.trim();
-  const rows = await API('/assets' + (q ? '?q=' + encodeURIComponent(q) : ''));
-  $('#assetCountSub').textContent = `${rows.length} item${rows.length === 1 ? '' : 's'}`;
-  const list = $('#assetList');
-  if (!rows.length) {
-    list.innerHTML = emptyState('box', q ? 'No matches' : 'No assets yet',
-      q ? 'Try a different search.' : 'Add your first asset to start the register.');
-    return;
-  }
-  list.innerHTML = rows.map(a => {
-    const w = warrantyMeta(a.warranty_expiry);
-    return `
+let ASSET_GROUPS = [];
+
+function assetCard(a) {
+  const w = warrantyMeta(a.warranty_expiry);
+  const label = a.label || (a.prefix || '') + String(a.asset_no).padStart(3, '0');
+  return `
     <div class="card asset">
       ${a.has_photo
         ? `<div class="thumb" data-photo="${a.id}" onclick="viewPhoto(${a.id})"></div>`
-        : `<div class="tag">${String(a.asset_no).padStart(3, '0')}</div>`}
+        : `<div class="tag">${esc(label)}</div>`}
       <div class="meta">
-        <div class="name">${a.has_photo ? `<span class="mono" style="color:var(--accent)">#${String(a.asset_no).padStart(3, '0')}</span> ` : ''}${esc(a.name)}</div>
+        <div class="name">${a.has_photo ? `<span class="mono" style="color:var(--accent)">${esc(label)}</span> ` : ''}${esc(a.name)}</div>
         ${a.description ? `<div class="desc">${esc(a.description)}</div>` : ''}
         <div class="chips">
           ${a.category ? `<span class="chip">${esc(a.category)}</span>` : ''}
@@ -113,12 +106,41 @@ async function loadAssets() {
         </div>
       </div>
       <div class="rowactions">
+        <button class="iconbtn" onclick='assetReport(${a.id})' title="Report">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
+        </button>
         <button class="iconbtn" onclick='openAsset(${a.id})' title="Edit">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
         </button>
       </div>
     </div>`;
-  }).join('');
+}
+
+async function loadAssets() {
+  const q = $('#assetSearch').value.trim();
+  const [rows, groups] = await Promise.all([
+    API('/assets' + (q ? '?q=' + encodeURIComponent(q) : '')),
+    ASSET_GROUPS.length ? Promise.resolve(ASSET_GROUPS) : API('/asset-groups'),
+  ]);
+  ASSET_GROUPS = groups;
+  $('#assetCountSub').textContent = `${rows.length} item${rows.length === 1 ? '' : 's'}`;
+  const list = $('#assetList');
+  if (!rows.length) {
+    list.innerHTML = emptyState('box', q ? 'No matches' : 'No assets yet',
+      q ? 'Try a different search.' : 'Add your first asset to start the register.');
+    return;
+  }
+  // Group by prefix; show group sections in configured order, then any others.
+  const order = groups.map(g => g.prefix);
+  const byPrefix = {};
+  rows.forEach(a => { (byPrefix[a.prefix] = byPrefix[a.prefix] || []).push(a); });
+  const prefixes = [...new Set([...order, ...Object.keys(byPrefix)])].filter(p => byPrefix[p]);
+  const nameFor = p => (groups.find(g => g.prefix === p) || {}).name || p;
+  list.innerHTML = prefixes.map(p => `
+    <details class="group" open>
+      <summary><span class="g-name">${esc(nameFor(p))}</span><span class="g-meta">${esc(p)} · ${byPrefix[p].length}</span></summary>
+      <div class="group-body">${byPrefix[p].map(assetCard).join('')}</div>
+    </details>`).join('');
   loadThumbs();
 }
 
@@ -154,22 +176,29 @@ async function viewPhoto(id) {
   } catch (e) {}
 }
 
+let _assetList = [];
+function _numbersFor(prefix, selfNo) {
+  const used = new Set(_assetList.filter(x => x.prefix === prefix).map(x => x.asset_no).filter(n => n != null));
+  if (selfNo != null) used.delete(selfNo);
+  let next = 1; while (used.has(next)) next++;
+  const freed = [];
+  for (let n = 1; n < next; n++) if (!used.has(n)) freed.push(n);
+  return { next, freed };
+}
+
 function openAsset(id) {
   const editing = id != null;
-  API('/assets').then(list => {
+  Promise.all([
+    API('/assets'),
+    ASSET_GROUPS.length ? Promise.resolve(ASSET_GROUPS) : API('/asset-groups'),
+  ]).then(([list, groups]) => {
+    _assetList = list; ASSET_GROUPS = groups;
     const a = editing ? (list.find(x => x.id === id) || {}) : {};
-    const used = new Set(list.map(x => x.asset_no).filter(n => n != null));
-    if (editing && a.asset_no != null) used.delete(a.asset_no);  // its own number is free to keep
-    let max = 0; used.forEach(n => { if (n > max) max = n; });
-    let next = 1; while (used.has(next)) next++;
-    const freed = [];
-    for (let n = 1; n < next; n++) if (!used.has(n)) freed.push(n);  // gaps below next
+    const prefix = editing ? a.prefix : ((groups[0] || {}).prefix || 'OF');
+    const { next, freed } = _numbersFor(prefix, editing ? a.asset_no : null);
     const suggested = editing ? (a.asset_no ?? next) : next;
-    // Quick-pick: any freed/gap numbers, plus the next new number.
-    const picks = [...new Set([...freed, next, suggested])].sort((x, y) => x - y).slice(0, 14);
-    const hint = editing
-      ? 'Edit the number, or tap a free one below to reassign.'
-      : (freed.length ? 'Set to the next free number — tap a freed one to reuse it.' : 'Next free number. Change it if you want.');
+    const groupOpts = groups.map(g =>
+      `<option value="${esc(g.prefix)}" ${g.prefix === prefix ? 'selected' : ''}>${esc(g.name)} (${esc(g.prefix)})</option>`).join('');
 
     $('#modal').innerHTML = `
       <div class="mhead">
@@ -178,17 +207,19 @@ function openAsset(id) {
       </div>
       <div class="mbody">
         <div class="grid2">
-          <div class="field">
-            <label>Label number</label>
-            <input id="f_asset_no" type="number" min="1" value="${suggested}">
+          <div class="field"><label>Group</label>
+            <select id="f_prefix" onchange="onGroupChange()">${groupOpts}</select>
           </div>
-          <div class="field"><label>Category</label><input id="f_category" value="${esc(a.category)}" placeholder="Furniture / Tool…"></div>
+          <div class="field"><label>Label number</label>
+            <input id="f_asset_no" type="number" min="1" value="${suggested}" oninput="updateLabelPreview()">
+          </div>
         </div>
-        <div class="numhint">${hint}</div>
-        <div class="numchips">${picks.map(n =>
-          `<button type="button" class="numchip${n === suggested ? ' on' : ''}${freed.includes(n) ? ' free' : ''}" onclick="setAssetNo(${n})">${String(n).padStart(3, '0')}</button>`
-        ).join('')}</div>
+        <div class="label-preview">Label: <b id="labelPreview">${esc(prefix)}${String(suggested).padStart(3, '0')}</b></div>
+        <div class="numhint" id="numHint"></div>
+        <div class="numchips" id="numChips"></div>
+
         <div class="field" style="margin-top:14px"><label>Name</label><input id="f_name" value="${esc(a.name)}" placeholder="e.g. Office chair – Roxanne"></div>
+        <div class="field"><label>Category</label><input id="f_category" value="${esc(a.category)}" placeholder="Furniture / Tool…"></div>
         <div class="field"><label>Description</label><input id="f_description" value="${esc(a.description)}"></div>
         <div class="grid2">
           <div class="field"><label>Location</label><input id="f_location" value="${esc(a.location)}"></div>
@@ -198,7 +229,7 @@ function openAsset(id) {
 
         <div class="field"><label>Photo</label>
           <div class="photo-pick">
-            <div class="preview ${a.has_photo ? '' : 'empty'}" id="photoPreview" ${a.has_photo ? `data-photo="${id}"` : ''}>${a.has_photo ? '' : 'No photo'}</div>
+            <div class="preview ${a.has_photo ? '' : 'empty'}" id="photoPreview">${a.has_photo ? '' : 'No photo'}</div>
             <div style="display:flex;flex-direction:column;gap:6px">
               <button type="button" class="btn ghost small" onclick="document.getElementById('photoInput').click()">${a.has_photo ? 'Replace' : 'Add photo'}</button>
               <button type="button" class="btn ghost small" id="photoRemoveBtn" onclick="removePhoto()" style="${a.has_photo ? '' : 'display:none'}">Remove</button>
@@ -223,11 +254,40 @@ function openAsset(id) {
         ${editing ? `<button class="btn danger" onclick="deleteAsset(${id})">Delete</button>` : ''}
         <button class="btn" onclick="saveAsset(${editing ? id : 'null'})">Save</button>
       </div>`;
-    assetPhoto = undefined;            // unchanged until the user picks/removes
+    assetPhoto = undefined;
+    _editingAssetNo = editing ? a.asset_no : null;
+    renderNumChips(prefix, suggested);
     $('#modalBg').classList.add('show');
     if (a.has_photo) loadPreviewThumb(id);
     setTimeout(() => $('#f_name').focus(), 60);
   });
+}
+
+let _editingAssetNo = null;
+function renderNumChips(prefix, current) {
+  const { next, freed } = _numbersFor(prefix, _editingAssetNo);
+  const picks = [...new Set([...freed, next, current])].filter(n => n > 0).sort((x, y) => x - y).slice(0, 14);
+  $('#numHint').textContent = freed.length
+    ? 'Tap a freed number to reuse it, or type your own.'
+    : 'Next free number in this group. Change it if you want.';
+  $('#numChips').innerHTML = picks.map(n =>
+    `<button type="button" class="numchip${n === current ? ' on' : ''}${freed.includes(n) ? ' free' : ''}" onclick="setAssetNo(${n})">${String(n).padStart(3, '0')}</button>`).join('');
+}
+
+function onGroupChange() {
+  const prefix = $('#f_prefix').value;
+  const { next } = _numbersFor(prefix, _editingAssetNo);
+  $('#f_asset_no').value = next;
+  renderNumChips(prefix, next);
+  updateLabelPreview();
+}
+
+function updateLabelPreview() {
+  const prefix = $('#f_prefix').value;
+  const no = parseInt($('#f_asset_no').value, 10) || 0;
+  $('#labelPreview').textContent = prefix + String(no).padStart(3, '0');
+  document.querySelectorAll('#numChips .numchip').forEach(c =>
+    c.classList.toggle('on', parseInt(c.textContent, 10) === no));
 }
 
 let assetPhoto;   // undefined = unchanged, '' = remove, dataURL = new image
@@ -268,8 +328,7 @@ function removePhoto() {
 
 function setAssetNo(n) {
   $('#f_asset_no').value = n;
-  document.querySelectorAll('.numchip').forEach(c =>
-    c.classList.toggle('on', parseInt(c.textContent, 10) === n));
+  updateLabelPreview();
 }
 
 async function saveAsset(id) {
@@ -279,6 +338,7 @@ async function saveAsset(id) {
     .forEach(k => body[k] = $('#f_' + k).value.trim());
   const noVal = $('#f_asset_no').value.trim();
   body.asset_no = noVal ? parseInt(noVal, 10) : null;
+  body.prefix = $('#f_prefix').value;
   if (assetPhoto !== undefined) body.photo = assetPhoto;   // '' removes, dataURL sets
   if (!body.name) { toast('Name is required', 'err'); return; }
   try {
@@ -345,6 +405,7 @@ function compCard(c) {
       ${canRenew ? `<div class="comp-actions">
         <button class="btn small" onclick='openRenew(${c.id}, ${isMachine})'>${renewLabel}</button>
         <button class="btn ghost small" onclick='openHistory(${c.id})'>History</button>
+        <button class="btn ghost small" onclick='compReport(${c.id})'>Report</button>
       </div>` : ''}
     </div>`;
 }
@@ -411,7 +472,20 @@ async function loadComp() {
       (q || cat) ? 'Try a different filter.' : 'Add licences, services and renewals to track here.');
     return;
   }
-  list.innerHTML = rows.map(compCard).join('');
+  // Collapsible sections per category, in the order they appear in the type list.
+  const order = Object.keys(CATS);
+  const byCat = {};
+  rows.forEach(c => { (byCat[c.category] = byCat[c.category] || []).push(c); });
+  const cats = [...new Set([...order, ...Object.keys(byCat)])].filter(c => byCat[c]);
+  list.innerHTML = cats.map(c => {
+    const items = byCat[c];
+    const bad = items.filter(i => i.status === 'expired' || i.status === 'expiring').length;
+    return `
+      <details class="group" open>
+        <summary><span class="g-name">${catLabel(c)}</span><span class="g-meta">${bad ? `<span class="g-flag">${bad}</span>` : ''}${items.length}</span></summary>
+        <div class="group-body">${items.map(compCard).join('')}</div>
+      </details>`;
+  }).join('');
 }
 
 function openComp(id) {
@@ -783,6 +857,34 @@ async function backupNow() {
     const r = await API('/backup/now', { method: 'POST' });
     toast(r.message, r.ok ? 'ok' : 'err');
     if (r.ok) loadBackupConfig();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function openReportView(html) {
+  $('#reportContent').innerHTML = html;
+  $('#reportOverlay').classList.add('show');
+  document.body.classList.add('report-open');
+  $('.report-scroll').scrollTop = 0;
+}
+function closeReport() {
+  $('#reportOverlay').classList.remove('show');
+  document.body.classList.remove('report-open');
+}
+async function assetReport(id) {
+  toast('Building report…');
+  try { openReportView((await API('/reports/asset/' + id)).html); }
+  catch (e) { toast(e.message, 'err'); }
+}
+async function compReport(id) {
+  toast('Building report…');
+  try { openReportView((await API('/reports/compliance/' + id)).html); }
+  catch (e) { toast(e.message, 'err'); }
+}
+async function reportAll(kind) {
+  toast('Building report…');
+  try {
+    const ep = kind === 'assets' ? '/reports/assets' : '/reports/compliance';
+    openReportView((await API(ep)).html);
   } catch (e) { toast(e.message, 'err'); }
 }
 

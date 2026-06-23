@@ -72,6 +72,17 @@ It pulls the `main` branch zip, copies files over the running code (leaving
 `data/` untouched), bumps `VERSION`, and restarts the container on the new code.
 
 
+## What's in 1.6.0
+
+- **Printable reports** — generate a clean, printable report for a single asset
+  (with its photo and QR), the whole asset register (grouped by Office/Workshop),
+  a single compliance item (with its full renewal history), or the whole tracker.
+  Reports open in-app with a **Print** button — works inside the Android wrapper.
+  "Report" buttons live on each card and in the Assets / Tracker headers.
+
+(Asset groups with OF/WS prefixes, the group dropdown with live label preview,
+grouped Asset and Tracker lists, and label-number search were already in place.)
+
 ## What's in 1.5.0
 
 - **Renew button** — on any tracked item (Tracker tab *and* straight from the

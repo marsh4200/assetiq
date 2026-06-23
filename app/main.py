@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import database, updater, auth, backup
+from . import database, updater, auth, backup, reports
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 STATIC_DIR = os.path.join(ROOT, "static")
@@ -23,12 +23,14 @@ def _startup():
     database.init_db()
     auth.ensure_default_admin()
     database.ensure_default_checklist()
+    database.ensure_default_groups()
     backup.start_scheduler()
 
 
 # ---------------------------------------------------------------- models -----
 class Asset(BaseModel):
     name: str
+    prefix: str = "OF"
     asset_no: int | None = None
     description: str = ""
     category: str = ""
@@ -60,6 +62,11 @@ class RenewIn(BaseModel):
     issue_date: str = ""        # date newly issued (optional)
     service_date: str = ""      # for machines: when the service was done
     note: str = ""
+
+
+class AssetGroupIn(BaseModel):
+    name: str
+    prefix: str
 
 
 class SettingsIn(BaseModel):
@@ -212,8 +219,73 @@ def _lead_days():
 
 # -------------------------------------------------------------- assets ------
 @app.get("/api/assets/next-number")
-def next_asset_number(user: dict = Depends(auth.current_user)):
-    return {"next": database.next_free_asset_no()}
+def next_asset_number(prefix: str = "OF", user: dict = Depends(auth.current_user)):
+    return {"next": database.next_free_asset_no(prefix)}
+
+
+@app.get("/api/asset-groups")
+def list_groups(user: dict = Depends(auth.current_user)):
+    with database.db() as conn:
+        rows = conn.execute("SELECT * FROM asset_groups ORDER BY sort, name").fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/asset-groups")
+def create_group(g: AssetGroupIn, user: dict = Depends(auth.require_admin)):
+    name = g.name.strip()
+    prefix = g.prefix.strip().upper()
+    if not name or not prefix:
+        raise HTTPException(400, "Name and prefix are required")
+    if not prefix.isalnum():
+        raise HTTPException(400, "Prefix must be letters/numbers only")
+    with database.db() as conn:
+        if conn.execute("SELECT id FROM asset_groups WHERE prefix=?", (prefix,)).fetchone():
+            raise HTTPException(409, f"Prefix {prefix} already exists")
+        nxt = conn.execute("SELECT COALESCE(MAX(sort),0)+1 s FROM asset_groups").fetchone()["s"]
+        cur = conn.execute("INSERT INTO asset_groups (name, prefix, sort) VALUES (?,?,?)",
+                           (name, prefix, nxt))
+        row = conn.execute("SELECT * FROM asset_groups WHERE id=?", (cur.lastrowid,)).fetchone()
+    return dict(row)
+
+
+@app.put("/api/asset-groups/{group_id}")
+def update_group(group_id: int, g: AssetGroupIn, user: dict = Depends(auth.require_admin)):
+    name = g.name.strip()
+    prefix = g.prefix.strip().upper()
+    with database.db() as conn:
+        row = conn.execute("SELECT * FROM asset_groups WHERE id=?", (group_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Group not found")
+        clash = conn.execute("SELECT id FROM asset_groups WHERE prefix=? AND id!=?",
+                             (prefix, group_id)).fetchone()
+        if clash:
+            raise HTTPException(409, f"Prefix {prefix} already exists")
+        old_prefix = row["prefix"]
+        conn.execute("UPDATE asset_groups SET name=?, prefix=? WHERE id=?",
+                     (name, prefix, group_id))
+        # Keep existing assets attached to the renamed prefix.
+        if old_prefix != prefix:
+            conn.execute("UPDATE assets SET prefix=? WHERE prefix=?", (prefix, old_prefix))
+        out = conn.execute("SELECT * FROM asset_groups WHERE id=?", (group_id,)).fetchone()
+    return dict(out)
+
+
+@app.delete("/api/asset-groups/{group_id}")
+def delete_group(group_id: int, user: dict = Depends(auth.require_admin)):
+    with database.db() as conn:
+        row = conn.execute("SELECT * FROM asset_groups WHERE id=?", (group_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Group not found")
+        in_use = conn.execute("SELECT COUNT(*) c FROM assets WHERE prefix=?",
+                              (row["prefix"],)).fetchone()["c"]
+        if in_use:
+            raise HTTPException(400, f"{in_use} asset(s) still use {row['prefix']} — move them first")
+        conn.execute("DELETE FROM asset_groups WHERE id=?", (group_id,))
+    return {"ok": True}
+
+
+def _label(prefix, no):
+    return f"{prefix or ''}{str(no).zfill(3)}" if no is not None else ""
 
 
 @app.get("/api/assets")
@@ -222,40 +294,43 @@ def list_assets(q: str = "", user: dict = Depends(auth.current_user)):
     with database.db() as conn:
         if q:
             like = f"%{q}%"
-            params = [like] * 8
+            # also match against the full label like "OF001"
+            params = [like] * 10
             sql = ("SELECT * FROM assets WHERE name LIKE ? OR description LIKE ? "
                    "OR category LIKE ? OR location LIKE ? OR serial_number LIKE ? "
-                   "OR assigned_to LIKE ? OR supplier LIKE ? OR CAST(asset_no AS TEXT) LIKE ?")
-            # "001" / "01" / "1" should all match label number 1 exactly.
+                   "OR assigned_to LIKE ? OR supplier LIKE ? OR CAST(asset_no AS TEXT) LIKE ? "
+                   "OR (prefix || printf('%03d', asset_no)) LIKE ? "
+                   "OR (prefix || CAST(asset_no AS TEXT)) LIKE ?")
             if q.isdigit():
                 sql += " OR asset_no = ?"
                 params.append(int(q))
-            sql += " ORDER BY asset_no"
+            sql += " ORDER BY prefix, asset_no"
             rows = conn.execute(sql, params).fetchall()
         else:
-            rows = conn.execute("SELECT * FROM assets ORDER BY asset_no").fetchall()
+            rows = conn.execute("SELECT * FROM assets ORDER BY prefix, asset_no").fetchall()
         with_photos = {r["asset_id"] for r in conn.execute(
             "SELECT asset_id FROM asset_photos").fetchall()}
     out = []
     for r in rows:
         d = dict(r)
         d["has_photo"] = d["id"] in with_photos
+        d["label"] = _label(d.get("prefix"), d.get("asset_no"))
         out.append(d)
     return out
 
 
-def _resolve_asset_no(conn, requested, exclude_id=None):
-    """Validate a requested label number, or assign the next free one."""
+def _resolve_asset_no(conn, prefix, requested, exclude_id=None):
+    """Validate a requested label number within a prefix, or assign next free."""
     if requested is None:
-        return database.next_free_asset_no()
+        return database.next_free_asset_no(prefix)
     if requested < 1:
         raise HTTPException(400, "Label number must be 1 or higher")
     clash = conn.execute(
-        "SELECT id FROM assets WHERE asset_no=? AND id IS NOT ?",
-        (requested, exclude_id),
+        "SELECT id FROM assets WHERE prefix=? AND asset_no=? AND id IS NOT ?",
+        (prefix, requested, exclude_id),
     ).fetchone()
     if clash:
-        raise HTTPException(409, f"Label number {requested} is already used")
+        raise HTTPException(409, f"{_label(prefix, requested)} is already used")
     return requested
 
 
@@ -275,39 +350,43 @@ def _save_photo(conn, asset_id, photo):
 
 @app.post("/api/assets")
 def create_asset(a: Asset, user: dict = Depends(auth.current_user)):
+    prefix = (a.prefix or "OF").strip().upper()
     with database.db() as conn:
-        asset_no = _resolve_asset_no(conn, a.asset_no)
+        asset_no = _resolve_asset_no(conn, prefix, a.asset_no)
         cur = conn.execute(
-            "INSERT INTO assets (asset_no, name, description, category, location, "
+            "INSERT INTO assets (prefix, asset_no, name, description, category, location, "
             "serial_number, assigned_to, notes, purchase_date, cost, supplier, "
-            "warranty_expiry) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (asset_no, a.name, a.description, a.category, a.location,
+            "warranty_expiry) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (prefix, asset_no, a.name, a.description, a.category, a.location,
              a.serial_number, a.assigned_to, a.notes, a.purchase_date, a.cost,
              a.supplier, a.warranty_expiry),
         )
         _save_photo(conn, cur.lastrowid, a.photo)
         row = conn.execute("SELECT * FROM assets WHERE id=?", (cur.lastrowid,)).fetchone()
-    return dict(row)
+    d = dict(row); d["label"] = _label(d["prefix"], d["asset_no"])
+    return d
 
 
 @app.put("/api/assets/{asset_id}")
 def update_asset(asset_id: int, a: Asset, user: dict = Depends(auth.current_user)):
+    prefix = (a.prefix or "OF").strip().upper()
     with database.db() as conn:
         exists = conn.execute("SELECT id FROM assets WHERE id=?", (asset_id,)).fetchone()
         if not exists:
             raise HTTPException(404, "Asset not found")
-        asset_no = _resolve_asset_no(conn, a.asset_no, exclude_id=asset_id)
+        asset_no = _resolve_asset_no(conn, prefix, a.asset_no, exclude_id=asset_id)
         conn.execute(
-            "UPDATE assets SET asset_no=?, name=?, description=?, category=?, location=?, "
+            "UPDATE assets SET prefix=?, asset_no=?, name=?, description=?, category=?, location=?, "
             "serial_number=?, assigned_to=?, notes=?, purchase_date=?, cost=?, "
             "supplier=?, warranty_expiry=? WHERE id=?",
-            (asset_no, a.name, a.description, a.category, a.location,
+            (prefix, asset_no, a.name, a.description, a.category, a.location,
              a.serial_number, a.assigned_to, a.notes, a.purchase_date, a.cost,
              a.supplier, a.warranty_expiry, asset_id),
         )
         _save_photo(conn, asset_id, a.photo)
         row = conn.execute("SELECT * FROM assets WHERE id=?", (asset_id,)).fetchone()
-    return dict(row)
+    d = dict(row); d["label"] = _label(d["prefix"], d["asset_no"])
+    return d
 
 
 @app.delete("/api/assets/{asset_id}")
@@ -340,12 +419,12 @@ def get_asset_photo(asset_id: int, user: dict = Depends(auth.current_user)):
 @app.get("/api/assets/{asset_id}/qr.svg")
 def get_asset_qr(asset_id: int, user: dict = Depends(auth.current_user)):
     with database.db() as conn:
-        row = conn.execute("SELECT asset_no, name FROM assets WHERE id=?", (asset_id,)).fetchone()
+        row = conn.execute("SELECT prefix, asset_no, name FROM assets WHERE id=?", (asset_id,)).fetchone()
     if not row:
         raise HTTPException(404, "Asset not found")
     import io
     import segno
-    payload = f"ASSETIQ:{row['asset_no']}"
+    payload = f"ASSETIQ:{_label(row['prefix'], row['asset_no'])}"
     qr = segno.make(payload, error="m")
     buf = io.BytesIO()
     qr.save(buf, kind="svg", scale=1, border=2, dark="#111111", light=None)
@@ -542,8 +621,12 @@ def _csv_response(rows, fields, filename):
 @app.get("/api/export/assets.csv")
 def export_assets(user: dict = Depends(auth.current_user)):
     with database.db() as conn:
-        rows = [dict(r) for r in conn.execute("SELECT * FROM assets ORDER BY asset_no").fetchall()]
-    fields = ["asset_no", "name", "category", "location", "assigned_to",
+        rows = []
+        for r in conn.execute("SELECT * FROM assets ORDER BY prefix, asset_no").fetchall():
+            d = dict(r)
+            d["label"] = _label(d.get("prefix"), d.get("asset_no"))
+            rows.append(d)
+    fields = ["label", "prefix", "asset_no", "name", "category", "location", "assigned_to",
               "serial_number", "supplier", "cost", "purchase_date",
               "warranty_expiry", "description", "notes", "date_added"]
     return _csv_response(rows, fields, "assetiq-assets.csv")
@@ -559,6 +642,27 @@ def export_compliance(user: dict = Depends(auth.current_user)):
               "expiry_date", "last_service_date", "next_service_date",
               "status", "days_remaining", "notes"]
     return _csv_response(rows, fields, "assetiq-compliance.csv")
+
+
+# -------------------------------------------------------------- reports -----
+@app.get("/api/reports/asset/{asset_id}")
+def report_asset(asset_id: int, user: dict = Depends(auth.current_user)):
+    return {"html": reports.asset_report(asset_id)}
+
+
+@app.get("/api/reports/assets")
+def report_assets(user: dict = Depends(auth.current_user)):
+    return {"html": reports.assets_report()}
+
+
+@app.get("/api/reports/compliance/{item_id}")
+def report_compliance_item(item_id: int, user: dict = Depends(auth.current_user)):
+    return {"html": reports.compliance_item_report(item_id)}
+
+
+@app.get("/api/reports/compliance")
+def report_compliance(user: dict = Depends(auth.current_user)):
+    return {"html": reports.compliance_report()}
 
 
 # ------------------------------------------------------------ checklists ----

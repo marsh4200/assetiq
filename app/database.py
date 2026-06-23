@@ -107,8 +107,24 @@ def init_db():
             conn.execute("ALTER TABLE assets ADD COLUMN asset_no INTEGER")
             # Backfill existing rows with their id so nothing renumbers.
             conn.execute("UPDATE assets SET asset_no = id WHERE asset_no IS NULL")
+
+        # --- migration: asset groups / prefixes (OF001, WS001, …) -----------
+        if "prefix" not in cols:
+            conn.execute("ALTER TABLE assets ADD COLUMN prefix TEXT DEFAULT 'OF'")
+            conn.execute("UPDATE assets SET prefix = 'OF' WHERE prefix IS NULL OR prefix = ''")
+        # Old single-column index becomes wrong once prefixes repeat numbers.
+        conn.execute("DROP INDEX IF EXISTS idx_assets_no")
         conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_assets_no ON assets(asset_no)"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_assets_prefix_no ON assets(prefix, asset_no)"
+        )
+
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS asset_groups (
+                   id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                   name   TEXT NOT NULL,
+                   prefix TEXT NOT NULL UNIQUE,
+                   sort   INTEGER DEFAULT 0
+               )"""
         )
 
         # --- migration: purchase / warranty tracking ------------------------
@@ -218,18 +234,30 @@ def ensure_default_checklist():
             )
 
 
-def next_free_asset_no():
-    """Smallest positive integer not currently used as a label number.
+def next_free_asset_no(prefix="OF"):
+    """Smallest positive integer not used within this prefix.
 
-    Fills gaps, so a deleted 001 becomes the next suggestion again.
+    Fills gaps, so a deleted OF001 becomes the next suggestion again. Each
+    prefix (OF, WS, …) has its own independent sequence.
     """
     with db() as conn:
         used = {r["asset_no"] for r in conn.execute(
-            "SELECT asset_no FROM assets WHERE asset_no IS NOT NULL").fetchall()}
+            "SELECT asset_no FROM assets WHERE prefix=? AND asset_no IS NOT NULL",
+            (prefix,)).fetchall()}
     n = 1
     while n in used:
         n += 1
     return n
+
+
+def ensure_default_groups():
+    with db() as conn:
+        n = conn.execute("SELECT COUNT(*) c FROM asset_groups").fetchone()["c"]
+        if n == 0:
+            conn.executemany(
+                "INSERT OR IGNORE INTO asset_groups (name, prefix, sort) VALUES (?,?,?)",
+                [("Office / Admin", "OF", 0), ("Workshop", "WS", 1)],
+            )
 
 
 def get_settings():
