@@ -4,8 +4,9 @@ In-house **asset register** + **licence / compliance expiry tracker** for AR Too
 
 - **Assets** — numbered register (`#001`, `#002`, …). Each asset keeps its number for life; deleting one retires the number rather than reusing it. Print number labels straight from the Assets tab.
 - **Tracker** — licences, fire extinguishers, software, antivirus, vehicle licences, machine services, certificates. Expiry dates for most things; *last + next service* dates for machines.
+- **Machines** — dedicated service schedule for trucks, compressors, PCs and other machines. Each runs on its own interval (default every 6 months); the next service date auto-rolls forward each time a service is logged, and a full service history is kept per machine. Reminders fire a configurable lead ahead (default 1 month) and feed the Overview dashboard + bell.
 - **Overview** — traffic-light dashboard. Anything expiring within the lead time (default 2 months) or already expired is flagged green → amber → red. The bell badge shows the live count.
-- **Settings** — business name, warning lead time (1–6 months), light/dark theme, and the GitHub self-update button.
+- **Settings** — business name, warning lead time (1–6 months), machine service reminder lead (1–3 months), light/dark theme, and the GitHub self-update button.
 
 Stack: FastAPI + SQLite + vanilla JS. Runs on **port 9920**.
 

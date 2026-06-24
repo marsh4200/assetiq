@@ -9,6 +9,7 @@ DB_PATH = os.path.join(DATA_DIR, "assetiq.db")
 DEFAULT_SETTINGS = {
     "business_name": "ARSmartHome",
     "notify_lead_days": "60",      # ~2 months
+    "machine_notify_days": "30",   # remind 1 month before a machine service
     "theme": "dark",
     # --- backup / samba ---
     "smb_host": "",
@@ -195,6 +196,40 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_runs_created ON checklist_runs(created_at)"
         )
 
+        # --- machine services (trucks, compressors, PCs, …) -----------------
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS machines (
+                   id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                   name              TEXT NOT NULL,
+                   kind              TEXT DEFAULT 'machine',
+                   location          TEXT DEFAULT '',
+                   serial_number     TEXT DEFAULT '',
+                   interval_months   INTEGER DEFAULT 6,
+                   last_service_date TEXT DEFAULT '',
+                   next_service_date TEXT DEFAULT '',
+                   notes             TEXT DEFAULT '',
+                   created_at        TEXT DEFAULT (date('now'))
+               )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS machine_services (
+                   id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                   machine_id   INTEGER,
+                   service_date TEXT DEFAULT '',
+                   next_due     TEXT DEFAULT '',
+                   service_type TEXT DEFAULT 'Basic service',
+                   performed_by TEXT DEFAULT '',
+                   cost         TEXT DEFAULT '',
+                   notes        TEXT DEFAULT '',
+                   logged_by    TEXT DEFAULT '',
+                   logged_at    TEXT DEFAULT (datetime('now')),
+                   FOREIGN KEY(machine_id) REFERENCES machines(id) ON DELETE CASCADE
+               )"""
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mservices_machine ON machine_services(machine_id)"
+        )
+
 
 import json as _json
 
@@ -257,6 +292,70 @@ def ensure_default_groups():
             conn.executemany(
                 "INSERT OR IGNORE INTO asset_groups (name, prefix, sort) VALUES (?,?,?)",
                 [("Office / Admin", "OF", 0), ("Workshop", "WS", 1), ("Workshop Machines", "WM", 2)],
+            )
+
+
+from datetime import date as _date
+
+
+def add_months(iso_str, months):
+    """Add (or subtract) whole months to an ISO yyyy-mm-dd string, clamping the
+    day to the last valid day of the target month. Returns an ISO string."""
+    try:
+        d = _date.fromisoformat(iso_str)
+    except (TypeError, ValueError):
+        return ""
+    m = d.month - 1 + months
+    y = d.year + m // 12
+    m = m % 12 + 1
+    # Clamp the day (e.g. 31 Jan + 1 month -> 28/29 Feb).
+    import calendar
+    last = calendar.monthrange(y, m)[1]
+    return _date(y, m, min(d.day, last)).isoformat()
+
+
+# Machines seeded on first run: name, kind. Each gets a basic-service history.
+DEFAULT_MACHINES = [
+    ("Truck", "truck"),
+    ("Compressor", "compressor"),
+    ("PC", "pc"),
+]
+
+
+def ensure_default_machines():
+    """Seed the three workshop machines with two basic-service records each.
+
+    Last service is dated to last month, so the next service falls six months
+    after that. The earlier record sits a full service cycle before it, giving a
+    believable every-six-months history.
+    """
+    with db() as conn:
+        n = conn.execute("SELECT COUNT(*) c FROM machines").fetchone()["c"]
+        if n:
+            return
+        today = _date.today().isoformat()
+        last_service = add_months(today, -1)     # serviced last month
+        prev_service = add_months(last_service, -6)   # the cycle before that
+        prev_due     = last_service              # that earlier service was due now
+        next_due     = add_months(last_service, 6)    # next one, six months out
+
+        for name, kind in DEFAULT_MACHINES:
+            cur = conn.execute(
+                "INSERT INTO machines (name, kind, interval_months, "
+                "last_service_date, next_service_date, notes) VALUES (?,?,?,?,?,?)",
+                (name, kind, 6, last_service, next_due, ""),
+            )
+            mid = cur.lastrowid
+            conn.executemany(
+                "INSERT INTO machine_services (machine_id, service_date, next_due, "
+                "service_type, performed_by, notes, logged_by) "
+                "VALUES (?,?,?,?,?,?,?)",
+                [
+                    (mid, prev_service, prev_due, "Basic service", "",
+                     "Routine 6-month basic service.", "system"),
+                    (mid, last_service, next_due, "Basic service", "",
+                     "Routine 6-month basic service.", "system"),
+                ],
             )
 
 

@@ -71,6 +71,7 @@ function go(tab) {
   if (tab === 'dashboard')  loadDashboard();
   if (tab === 'assets')     loadAssets();
   if (tab === 'compliance') loadComp();
+  if (tab === 'machines')   loadMachines();
   if (tab === 'checklists') loadChecklists();
   if (tab === 'settings')   loadSettings();
 }
@@ -714,11 +715,246 @@ async function deleteComp(id) {
   catch (e) { toast(e.message, 'err'); }
 }
 
+/* ----------------------------------------------------- machine services --- */
+const MKINDS = { truck: 'Truck', compressor: 'Compressor', pc: 'PC', machine: 'Machine' };
+const mkindLabel = k => MKINDS[k] || 'Machine';
+// Reuse existing category colours so no extra CSS is needed.
+const MKIND_COLORCLASS = { truck: 'vehicle', compressor: 'machine', pc: 'software', machine: 'machine' };
+const MKIND_ICONS = {
+  truck:      '<path d="M5 11l1.5-4.2A2 2 0 0 1 8.4 5.5h7.2a2 2 0 0 1 1.9 1.3L19 11"/><path d="M5 11h14a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-1"/><path d="M3 17v-4a1 1 0 0 1 1-1"/><circle cx="7.5" cy="17" r="1.6"/><circle cx="16.5" cy="17" r="1.6"/>',
+  compressor: '<rect x="3" y="9" width="12" height="9" rx="1.5"/><circle cx="9" cy="13.5" r="2.4"/><path d="M15 11h3a2 2 0 0 1 2 2v5"/><path d="M7 9V7a2 2 0 0 1 2-2h0a2 2 0 0 1 2 2v2"/>',
+  pc:         '<rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/>',
+  machine:    '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
+};
+const mkindIcon = k => _svg(MKIND_ICONS[k] || MKIND_ICONS.machine);
+
+// yyyy-mm-dd + N months, clamping the day to the month's length.
+function addMonths(iso, months) {
+  if (!iso) return '';
+  const d = new Date(iso + 'T00:00:00');
+  if (isNaN(d)) return '';
+  const day = d.getDate();
+  d.setDate(1);
+  d.setMonth(d.getMonth() + months);
+  const last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  d.setDate(Math.min(day, last));
+  return d.toISOString().slice(0, 10);
+}
+
+function machineCard(m) {
+  const cc = MKIND_COLORCLASS[m.kind] || 'machine';
+  const statusTxt = { valid: 'On schedule', expiring: 'Due soon', expired: 'Overdue', none: 'No date' }[m.status];
+  const dateBlocks = [];
+  if (m.last_service_date) dateBlocks.push(
+    `<div><div class="k">Last service</div><div class="v">${esc(m.last_service_date)}</div></div>`);
+  if (m.next_service_date) dateBlocks.push(
+    `<div><div class="k">Next service</div><div class="v">${esc(m.next_service_date)}</div>${daysBadge({ days_remaining: m.days_until_service, status: m.status })}</div>`);
+  const metaChips = [];
+  if (m.location) metaChips.push(`<span class="ref-line">📍 ${esc(m.location)}</span>`);
+  if (m.serial_number) metaChips.push(`<span class="ref-line">${esc(m.serial_number)}</span>`);
+
+  return `
+    <div class="card comp ${m.status}">
+      <div class="top">
+        <div style="flex:1;min-width:0">
+          <div class="name">${esc(m.name)}</div>
+          <div class="catline"><span class="cat-ico cat-${cc}">${mkindIcon(m.kind)}</span><span class="cat">${mkindLabel(m.kind)} · every ${m.interval_months || 6} months</span></div>
+        </div>
+        <span class="status ${m.status}">${statusTxt}</span>
+        <button class="iconbtn" onclick='openMachine(${m.id})' title="Edit">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
+        </button>
+      </div>
+      ${dateBlocks.length ? `<div class="dates">${dateBlocks.join('')}</div>` : ''}
+      ${metaChips.length ? `<div style="margin-top:8px;display:flex;gap:12px;flex-wrap:wrap">${metaChips.join('')}</div>` : ''}
+      <div class="comp-actions">
+        <button class="btn small" onclick='openLogService(${m.id})'>Log service</button>
+        <button class="btn ghost small" onclick='openMachineHistory(${m.id})'>History</button>
+      </div>
+    </div>`;
+}
+
+async function loadMachines() {
+  const q = $('#machineSearch').value.trim();
+  const kind = $('#machineFilter').value;
+  const qs = new URLSearchParams();
+  if (q) qs.set('q', q);
+  if (kind) qs.set('kind', kind);
+  const rows = await API('/machines' + (qs.toString() ? '?' + qs : ''));
+  $('#machineCountSub').textContent = `${rows.length} machine${rows.length === 1 ? '' : 's'}`;
+  const list = $('#machineList');
+  if (!rows.length) {
+    list.innerHTML = emptyState('box', (q || kind) ? 'No matches' : 'No machines yet',
+      (q || kind) ? 'Try a different search.' : 'Add a machine to start tracking its service schedule.');
+    return;
+  }
+  // Group by type, in the dropdown order, then any others.
+  const order = Object.keys(MKINDS);
+  const byKind = {};
+  rows.forEach(m => { (byKind[m.kind] = byKind[m.kind] || []).push(m); });
+  const kinds = [...new Set([...order, ...Object.keys(byKind)])].filter(k => byKind[k]);
+  list.innerHTML = kinds.map(k => {
+    const items = byKind[k];
+    const bad = items.filter(i => i.status === 'expired' || i.status === 'expiring').length;
+    const cc = MKIND_COLORCLASS[k] || 'machine';
+    return `
+      <details class="group" open>
+        <summary>
+          <span class="g-icon cat-${cc}">${mkindIcon(k)}</span>
+          <span class="g-name">${mkindLabel(k)}</span>
+          <span class="g-meta">${bad ? `<span class="g-flag">${bad}</span>` : ''}<span class="g-count">${items.length}</span></span>
+          <span class="g-chev">${CHEVRON}</span>
+        </summary>
+        <div class="group-body">${items.map(machineCard).join('')}</div>
+      </details>`;
+  }).join('');
+}
+
+function openMachine(id) {
+  const editing = id != null;
+  const get = editing ? API('/machines').then(r => r.find(x => x.id === id)) : Promise.resolve({ kind: 'machine', interval_months: 6 });
+  get.then(m => {
+    m = m || {};
+    const opts = Object.entries(MKINDS).map(([v, l]) =>
+      `<option value="${v}" ${m.kind === v ? 'selected' : ''}>${l}</option>`).join('');
+    $('#modal').innerHTML = `
+      <div class="mhead">
+        <h3>${editing ? 'Edit machine' : 'New machine'}</h3>
+        <button class="iconbtn" onclick="closeModal()">✕</button>
+      </div>
+      <div class="mbody">
+        <div class="field"><label>Name</label><input id="m_name" value="${esc(m.name)}" placeholder="e.g. Iveco truck"></div>
+        <div class="grid2">
+          <div class="field"><label>Type</label><select id="m_kind">${opts}</select></div>
+          <div class="field"><label>Service every (months)</label><input id="m_interval" type="number" min="1" value="${esc(m.interval_months || 6)}" onchange="machineRecalcNext()"></div>
+        </div>
+        <div class="grid2">
+          <div class="field"><label>Last service</label><input id="m_last" type="date" value="${esc(m.last_service_date)}" onchange="machineRecalcNext()"></div>
+          <div class="field"><label>Next service due</label><input id="m_next" type="date" value="${esc(m.next_service_date)}" oninput="this.dataset.touched=1"></div>
+        </div>
+        <div class="numhint">Leave “next service due” blank to auto-set it the chosen number of months after the last service.</div>
+        <div class="grid2">
+          <div class="field"><label>Location</label><input id="m_location" value="${esc(m.location)}"></div>
+          <div class="field"><label>Serial number</label><input id="m_serial" value="${esc(m.serial_number)}"></div>
+        </div>
+        <div class="field"><label>Notes</label><textarea id="m_notes">${esc(m.notes)}</textarea></div>
+      </div>
+      <div class="mfoot">
+        ${editing ? `<button class="btn danger" onclick="deleteMachine(${id})">Delete</button>` : ''}
+        <button class="btn" onclick="saveMachine(${editing ? id : 'null'})">Save</button>
+      </div>`;
+    $('#modalBg').classList.add('show');
+    setTimeout(() => $('#m_name').focus(), 60);
+  });
+}
+
+// Keep the read-only-ish "next" preview in step when last/interval change and
+// the user hasn't typed their own next date yet.
+function machineRecalcNext() {
+  const last = $('#m_last').value;
+  const interval = parseInt($('#m_interval').value, 10) || 6;
+  const next = $('#m_next');
+  if (last && !next.dataset.touched) next.value = addMonths(last, interval);
+}
+
+async function saveMachine(id) {
+  const body = {
+    name: $('#m_name').value.trim(),
+    kind: $('#m_kind').value,
+    interval_months: parseInt($('#m_interval').value, 10) || 6,
+    last_service_date: $('#m_last').value,
+    next_service_date: $('#m_next').value,
+    location: $('#m_location').value.trim(),
+    serial_number: $('#m_serial').value.trim(),
+    notes: $('#m_notes').value.trim(),
+  };
+  if (!body.name) { toast('Name is required', 'err'); return; }
+  try {
+    await API(id ? '/machines/' + id : '/machines',
+      { method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    closeModal(); toast(id ? 'Machine updated' : 'Machine added', 'ok');
+    loadMachines(); refreshBell();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function deleteMachine(id) {
+  if (!confirm('Delete this machine and its service history?')) return;
+  try { await API('/machines/' + id, { method: 'DELETE' }); closeModal(); toast('Deleted', 'ok'); loadMachines(); refreshBell(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+
+function openLogService(id) {
+  API('/machines').then(r => r.find(x => x.id === id)).then(m => {
+    m = m || {};
+    const today = new Date().toISOString().slice(0, 10);
+    const interval = m.interval_months || 6;
+    $('#modal').innerHTML = `
+      <div class="mhead"><h3>Log service · ${esc(m.name || '')}</h3><button class="iconbtn" onclick="closeModal()">✕</button></div>
+      <div class="mbody">
+        <div class="grid2">
+          <div class="field"><label>Service date</label><input id="ls_date" type="date" value="${today}" onchange="logServiceRecalc(${interval})"></div>
+          <div class="field"><label>Next service due</label><input id="ls_next" type="date" value="${addMonths(today, interval)}"></div>
+        </div>
+        <div class="field"><label>Service type</label><input id="ls_type" value="Basic service"></div>
+        <div class="grid2">
+          <div class="field"><label>Performed by <span style="text-transform:none;color:var(--muted)">(optional)</span></label><input id="ls_by"></div>
+          <div class="field"><label>Cost <span style="text-transform:none;color:var(--muted)">(optional)</span></label><input id="ls_cost" placeholder="e.g. R1 250"></div>
+        </div>
+        <div class="field"><label>Notes <span style="text-transform:none;color:var(--muted)">(optional)</span></label><textarea id="ls_notes" placeholder="What was done"></textarea></div>
+        <div class="numhint">This is added to the machine’s history and rolls the next service date forward.</div>
+      </div>
+      <div class="mfoot"><button class="btn" onclick="submitLogService(${id})">Save service</button></div>`;
+    $('#modalBg').classList.add('show');
+    setTimeout(() => $('#ls_date').focus(), 60);
+  });
+}
+
+function logServiceRecalc(interval) {
+  const d = $('#ls_date').value;
+  if (d) $('#ls_next').value = addMonths(d, interval || 6);
+}
+
+async function submitLogService(id) {
+  const body = {
+    service_date: $('#ls_date').value,
+    next_due: $('#ls_next').value,
+    service_type: $('#ls_type').value.trim() || 'Basic service',
+    performed_by: $('#ls_by').value.trim(),
+    cost: $('#ls_cost').value.trim(),
+    notes: $('#ls_notes').value.trim(),
+  };
+  if (!body.service_date) { toast('Service date is required', 'err'); return; }
+  try {
+    await API('/machines/' + id + '/service', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    closeModal(); toast('Service logged', 'ok');
+    loadMachines(); refreshBell();
+    if ($('#view-dashboard').classList.contains('active')) loadDashboard();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function openMachineHistory(id) {
+  let hist;
+  try { hist = await API('/machines/' + id + '/history'); } catch (e) { toast(e.message, 'err'); return; }
+  $('#modal').innerHTML = `
+    <div class="mhead"><h3>Service history</h3><button class="iconbtn" onclick="closeModal()">✕</button></div>
+    <div class="mbody">
+      ${!hist.length ? '<p style="color:var(--muted)">No services logged yet.</p>' :
+        hist.map(h => `
+          <div class="hist-row">
+            <div class="hist-line"><b>${esc(h.service_date || '—')}</b> <span class="arr">→</span> <span class="old">next ${esc(h.next_due || '—')}</span></div>
+            <div class="hist-meta">${esc(h.service_type || 'Service')}${h.performed_by ? ' · ' + esc(h.performed_by) : ''}${h.cost ? ' · ' + esc(h.cost) : ''}${h.logged_at ? ' · logged ' + esc(h.logged_at.replace('T', ' ').slice(0, 16)) : ''}</div>
+            ${h.notes ? `<div class="hist-note">${esc(h.notes)}</div>` : ''}
+          </div>`).join('')}
+    </div>`;
+  $('#modalBg').classList.add('show');
+}
+
 /* ------------------------------------------------------------ settings ---- */
 async function loadSettings() {
   settings = await API('/settings');
   $('#setBiz').value = settings.business_name || '';
   $('#setLead').value = settings.notify_lead_days || '60';
+  if ($('#setMachineLead')) $('#setMachineLead').value = settings.machine_notify_days || '30';
   $('#setTheme').checked = settings.theme === 'light';
   if (ME) {
     $('#meName').textContent = ME.username;
@@ -1116,7 +1352,7 @@ async function doRestoreShare(filename) {
 
 async function saveSetting(key, value) {
   const payload = {};
-  payload[key] = key === 'notify_lead_days' ? parseInt(value, 10) : value;
+  payload[key] = (key === 'notify_lead_days' || key === 'machine_notify_days') ? parseInt(value, 10) : value;
   try {
     settings = await API('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     applySettings(); toast('Saved', 'ok'); refreshBell();

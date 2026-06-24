@@ -24,6 +24,7 @@ def _startup():
     auth.ensure_default_admin()
     database.ensure_default_checklist()
     database.ensure_default_groups()
+    database.ensure_default_machines()
     backup.start_scheduler()
 
 
@@ -69,9 +70,30 @@ class AssetGroupIn(BaseModel):
     prefix: str
 
 
+class MachineIn(BaseModel):
+    name: str
+    kind: str = "machine"            # truck | compressor | pc | machine
+    location: str = ""
+    serial_number: str = ""
+    interval_months: int = 6
+    last_service_date: str = ""
+    next_service_date: str = ""      # blank -> auto from last + interval
+    notes: str = ""
+
+
+class ServiceLogIn(BaseModel):
+    service_date: str = ""           # blank -> today
+    next_due: str = ""               # blank -> service_date + interval
+    service_type: str = "Basic service"
+    performed_by: str = ""
+    cost: str = ""
+    notes: str = ""
+
+
 class SettingsIn(BaseModel):
     business_name: str | None = None
     notify_lead_days: int | None = None
+    machine_notify_days: int | None = None
     theme: str | None = None
 
 
@@ -551,6 +573,134 @@ def compliance_history(item_id: int, user: dict = Depends(auth.current_user)):
     return [dict(r) for r in rows]
 
 
+# ------------------------------------------------------ machine services ----
+MACHINE_KINDS = {"truck", "compressor", "pc", "machine"}
+
+
+def _machine_lead():
+    try:
+        return int(database.get_settings().get("machine_notify_days", 30))
+    except (TypeError, ValueError):
+        return 30
+
+
+def _decorate_machine(row, lead):
+    d = dict(row)
+    days = _days_until(d.get("next_service_date", ""))
+    d["days_until_service"] = days
+    d["days_remaining"] = days
+    d["status"] = _status(days, lead)
+    return d
+
+
+@app.get("/api/machines")
+def list_machines(kind: str = "", q: str = "", user: dict = Depends(auth.current_user)):
+    lead = _machine_lead()
+    with database.db() as conn:
+        rows = conn.execute("SELECT * FROM machines").fetchall()
+    items = [_decorate_machine(r, lead) for r in rows]
+    if kind:
+        items = [i for i in items if i["kind"] == kind]
+    if q:
+        ql = q.lower()
+        items = [
+            i for i in items
+            if ql in (i["name"] or "").lower()
+            or ql in (i["location"] or "").lower()
+            or ql in (i["serial_number"] or "").lower()
+        ]
+    # Soonest-due / overdue first, undated last.
+    items.sort(key=lambda i: (i["days_remaining"] is None,
+                              i["days_remaining"] if i["days_remaining"] is not None else 0))
+    return items
+
+
+def _machine_next(last, interval, given):
+    """Resolve the next-service date: explicit value wins, else last + interval."""
+    if given:
+        return given
+    if last:
+        return database.add_months(last, interval or 6)
+    return ""
+
+
+@app.post("/api/machines")
+def create_machine(m: MachineIn, user: dict = Depends(auth.current_user)):
+    if not m.name.strip():
+        raise HTTPException(400, "Name is required")
+    kind = m.kind if m.kind in MACHINE_KINDS else "machine"
+    interval = m.interval_months or 6
+    nxt = _machine_next(m.last_service_date, interval, m.next_service_date)
+    with database.db() as conn:
+        cur = conn.execute(
+            "INSERT INTO machines (name, kind, location, serial_number, interval_months, "
+            "last_service_date, next_service_date, notes) VALUES (?,?,?,?,?,?,?,?)",
+            (m.name.strip(), kind, m.location, m.serial_number, interval,
+             m.last_service_date, nxt, m.notes),
+        )
+        row = conn.execute("SELECT * FROM machines WHERE id=?", (cur.lastrowid,)).fetchone()
+    return _decorate_machine(row, _machine_lead())
+
+
+@app.put("/api/machines/{machine_id}")
+def update_machine(machine_id: int, m: MachineIn, user: dict = Depends(auth.current_user)):
+    kind = m.kind if m.kind in MACHINE_KINDS else "machine"
+    interval = m.interval_months or 6
+    nxt = _machine_next(m.last_service_date, interval, m.next_service_date)
+    with database.db() as conn:
+        if not conn.execute("SELECT id FROM machines WHERE id=?", (machine_id,)).fetchone():
+            raise HTTPException(404, "Machine not found")
+        conn.execute(
+            "UPDATE machines SET name=?, kind=?, location=?, serial_number=?, interval_months=?, "
+            "last_service_date=?, next_service_date=?, notes=? WHERE id=?",
+            (m.name.strip(), kind, m.location, m.serial_number, interval,
+             m.last_service_date, nxt, m.notes, machine_id),
+        )
+        row = conn.execute("SELECT * FROM machines WHERE id=?", (machine_id,)).fetchone()
+    return _decorate_machine(row, _machine_lead())
+
+
+@app.delete("/api/machines/{machine_id}")
+def delete_machine(machine_id: int, user: dict = Depends(auth.current_user)):
+    with database.db() as conn:
+        conn.execute("DELETE FROM machine_services WHERE machine_id=?", (machine_id,))
+        conn.execute("DELETE FROM machines WHERE id=?", (machine_id,))
+    return {"ok": True}
+
+
+@app.post("/api/machines/{machine_id}/service")
+def log_machine_service(machine_id: int, s: ServiceLogIn, user: dict = Depends(auth.current_user)):
+    with database.db() as conn:
+        row = conn.execute("SELECT * FROM machines WHERE id=?", (machine_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Machine not found")
+        m = dict(row)
+        interval = m.get("interval_months") or 6
+        service_date = s.service_date or date.today().isoformat()
+        next_due = s.next_due or database.add_months(service_date, interval)
+        conn.execute(
+            "INSERT INTO machine_services (machine_id, service_date, next_due, service_type, "
+            "performed_by, cost, notes, logged_by) VALUES (?,?,?,?,?,?,?,?)",
+            (machine_id, service_date, next_due, s.service_type.strip() or "Basic service",
+             s.performed_by, s.cost, s.notes, user.get("username", "")),
+        )
+        conn.execute(
+            "UPDATE machines SET last_service_date=?, next_service_date=? WHERE id=?",
+            (service_date, next_due, machine_id),
+        )
+        out = conn.execute("SELECT * FROM machines WHERE id=?", (machine_id,)).fetchone()
+    return _decorate_machine(out, _machine_lead())
+
+
+@app.get("/api/machines/{machine_id}/history")
+def machine_history(machine_id: int, user: dict = Depends(auth.current_user)):
+    with database.db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM machine_services WHERE machine_id=? ORDER BY service_date DESC, id DESC",
+            (machine_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ------------------------------------------------------- notifications ------
 @app.get("/api/notifications")
 def notifications(user: dict = Depends(auth.current_user)):
@@ -561,6 +711,22 @@ def notifications(user: dict = Depends(auth.current_user)):
             d = _decorate_compliance(r, lead)
             if d["status"] in ("expiring", "expired"):
                 alerts.append(d)
+        # machine services coming due (their own 1-month lead, not the global one)
+        mlead = _machine_lead()
+        for r in conn.execute("SELECT * FROM machines").fetchall():
+            d = _decorate_machine(r, mlead)
+            if d["status"] in ("expiring", "expired"):
+                alerts.append({
+                    "id": f"machine-{r['id']}",
+                    "name": f"Service · {r['name']}",
+                    "category": "machine",
+                    "last_service_date": d.get("last_service_date", ""),
+                    "next_service_date": d.get("next_service_date", ""),
+                    "days_remaining": d["days_remaining"],
+                    "days_until_service": d["days_until_service"],
+                    "status": d["status"],
+                    "reference": (r["location"] or "").strip(),
+                })
         # warranties from the asset register feed the same dashboard
         for r in conn.execute(
             "SELECT id, asset_no, name, warranty_expiry FROM assets "
@@ -642,6 +808,18 @@ def export_compliance(user: dict = Depends(auth.current_user)):
               "expiry_date", "last_service_date", "next_service_date",
               "status", "days_remaining", "notes"]
     return _csv_response(rows, fields, "assetiq-compliance.csv")
+
+
+@app.get("/api/export/machines.csv")
+def export_machines(user: dict = Depends(auth.current_user)):
+    lead = _machine_lead()
+    with database.db() as conn:
+        rows = [_decorate_machine(r, lead)
+                for r in conn.execute("SELECT * FROM machines").fetchall()]
+    fields = ["name", "kind", "location", "serial_number", "interval_months",
+              "last_service_date", "next_service_date", "status",
+              "days_remaining", "notes"]
+    return _csv_response(rows, fields, "assetiq-machines.csv")
 
 
 # -------------------------------------------------------------- reports -----

@@ -104,6 +104,33 @@
       <div id="compList"></div>
     </section>
 
+    <!-- ----------------------------------------------------- machines -->
+    <section class="view" id="view-machines">
+      <div class="head">
+        <div><h2>Machines</h2><div class="sub" id="machineCountSub">Service schedule</div></div>
+        <div class="spacer"></div>
+        <button class="btn ghost small" onclick="exportCSV('machines')" title="Export CSV">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          CSV
+        </button>
+        <button class="btn small" onclick="openMachine()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Add
+        </button>
+      </div>
+      <div class="searchbar">
+        <input id="machineSearch" placeholder="Search machine, location, serial…" oninput="loadMachines()">
+        <select id="machineFilter" onchange="loadMachines()" style="flex:0 0 150px">
+          <option value="">All types</option>
+          <option value="truck">Truck</option>
+          <option value="compressor">Compressor</option>
+          <option value="pc">PC</option>
+          <option value="machine">Machine</option>
+        </select>
+      </div>
+      <div id="machineList"></div>
+    </section>
+
     <!-- ---------------------------------------------------- checklists -->
     <section class="view" id="view-checklists">
       <div class="head">
@@ -134,6 +161,16 @@
               <option value="90">3 months</option>
               <option value="120">4 months</option>
               <option value="180">6 months</option>
+            </select>
+          </div>
+        </div>
+        <div class="set-row">
+          <div class="info"><div class="t">Machine service reminder</div><div class="d">Notify this far ahead of a machine service</div></div>
+          <div class="ctrl">
+            <select id="setMachineLead" onchange="saveSetting('machine_notify_days', this.value)">
+              <option value="30">1 month</option>
+              <option value="60">2 months</option>
+              <option value="90">3 months</option>
             </select>
           </div>
         </div>
@@ -230,6 +267,10 @@
     <button data-tab="compliance" onclick="go('compliance')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
       Tracker
+    </button>
+    <button data-tab="machines" onclick="go('machines')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.3L3 18v3h3l6.4-6.4a4 4 0 0 0 5.3-5.4l-2.6 2.6-2.1-.5-.5-2.1z"/></svg>
+      Machines
     </button>
     <button data-tab="checklists" onclick="go('checklists')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>
