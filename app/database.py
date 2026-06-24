@@ -256,7 +256,7 @@ def ensure_default_groups():
         if n == 0:
             conn.executemany(
                 "INSERT OR IGNORE INTO asset_groups (name, prefix, sort) VALUES (?,?,?)",
-                [("Office / Admin", "OF", 0), ("Workshop", "WS", 1)],
+                [("Office / Admin", "OF", 0), ("Workshop", "WS", 1), ("Workshop Machines", "WM", 2)],
             )
 
 

@@ -253,6 +253,25 @@ label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 5px;
 .group-body .card:last-child { margin-bottom: 0; }
 .group-body .asset { background: var(--surface-2); }
 
+/* groups manager */
+.grp-list { display: flex; flex-direction: column; gap: 8px; }
+.grp-row {
+  display: flex; align-items: center; gap: 11px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 10px; padding: 9px 11px;
+}
+.grp-row .g-icon { width: 34px; height: 34px; }
+.grp-row .g-icon svg { width: 19px; height: 19px; }
+.grp-main { flex: 1; min-width: 0; }
+.grp-name { font-weight: 600; font-size: 14px; }
+.grp-sub { font-size: 12px; color: var(--muted); margin-top: 1px; display: flex; align-items: center; gap: 6px; }
+.link-mini {
+  background: none; border: 0; cursor: pointer; padding: 0 0 0 6px;
+  color: var(--accent); font-size: 11px; font-weight: 600; text-transform: none;
+  letter-spacing: 0; font-family: var(--body);
+}
+.link-mini:hover { text-decoration: underline; }
+
 /* tint the group icon per Tracker category */
 .g-icon.cat-licence,     .cat-ico.cat-licence     { background: color-mix(in srgb, var(--c-licence) 16%, transparent);     color: var(--c-licence); }
 .g-icon.cat-fire_extinguisher, .cat-ico.cat-fire_extinguisher { background: color-mix(in srgb, var(--c-fire) 16%, transparent); color: var(--c-fire); }
@@ -407,6 +426,11 @@ label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 5px;
 .comp .ref-line { margin-top: 6px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
 .comp-actions { display: flex; gap: 8px; margin-top: 12px; }
 .comp-actions .btn { flex: 0 0 auto; }
+.renew-hint {
+  display: flex; align-items: center; gap: 6px; margin-top: 8px;
+  font-size: 12px; color: var(--muted);
+}
+.renew-hint svg { width: 14px; height: 14px; flex: 0 0 auto; }
 .hist-row { padding: 10px 0; border-bottom: 1px solid var(--line); }
 .hist-row:last-child { border-bottom: 0; }
 .hist-line { font-size: 15px; }

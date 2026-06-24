@@ -248,7 +248,7 @@ function openAsset(id) {
       </div>
       <div class="mbody">
         <div class="grid2">
-          <div class="field"><label>Group</label>
+          <div class="field"><label>Group <button type="button" class="link-mini" onclick="openGroups()">manage</button></label>
             <select id="f_prefix" onchange="onGroupChange()">${groupOpts}</select>
           </div>
           <div class="field"><label>Label number</label>
@@ -395,6 +395,87 @@ async function deleteAsset(id) {
   catch (e) { toast(e.message, 'err'); }
 }
 
+/* ------------------------------------------------------- asset groups ----- */
+async function openGroups() {
+  let groups, assets;
+  try {
+    [groups, assets] = await Promise.all([API('/asset-groups'), API('/assets')]);
+  } catch (e) { toast(e.message, 'err'); return; }
+  ASSET_GROUPS = groups;
+  const count = {};
+  assets.forEach(a => { count[a.prefix] = (count[a.prefix] || 0) + 1; });
+  const rows = groups.map(g => `
+    <div class="grp-row">
+      <span class="g-icon">${groupIcon(g.name)}</span>
+      <div class="grp-main">
+        <div class="grp-name">${esc(g.name)}</div>
+        <div class="grp-sub"><span class="g-tag">${esc(g.prefix)}</span> · ${count[g.prefix] || 0} asset${(count[g.prefix] || 0) === 1 ? '' : 's'}</div>
+      </div>
+      <button class="iconbtn" onclick='openGroupForm(${g.id})' title="Edit">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
+      </button>
+      <button class="iconbtn danger" onclick='deleteGroup(${g.id}, ${JSON.stringify(g.prefix)}, ${count[g.prefix] || 0})' title="Delete">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      </button>
+    </div>`).join('');
+  $('#modal').innerHTML = `
+    <div class="mhead"><h3>Asset groups</h3><button class="iconbtn" onclick="closeModal()">✕</button></div>
+    <div class="mbody">
+      <p style="color:var(--muted);font-size:13px;margin:0 0 10px">Groups sort your register and set the label prefix (e.g. WM-001 for Workshop Machines).</p>
+      <div class="grp-list">${rows || '<p style="color:var(--muted)">No groups yet.</p>'}</div>
+      <button class="btn small" style="margin-top:10px" onclick="openGroupForm()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        New group
+      </button>
+    </div>`;
+  $('#modalBg').classList.add('show');
+}
+
+function openGroupForm(id) {
+  const editing = !!id;
+  const g = editing ? (ASSET_GROUPS.find(x => x.id === id) || {}) : { name: '', prefix: '' };
+  $('#modal').innerHTML = `
+    <div class="mhead"><h3>${editing ? 'Edit group' : 'New group'}</h3><button class="iconbtn" onclick="openGroups()">✕</button></div>
+    <div class="mbody">
+      <div class="field"><label>Name</label><input id="g_name" value="${esc(g.name)}" placeholder="Workshop Machines"></div>
+      <div class="field"><label>Label prefix</label>
+        <input id="g_prefix" value="${esc(g.prefix)}" maxlength="6" placeholder="WM"
+               oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'')">
+      </div>
+      <div class="numhint">Letters and numbers only. Labels become like <span class="mono">WM001</span>, <span class="mono">WM002</span>…</div>
+    </div>
+    <div class="mfoot"><button class="btn" onclick="saveGroup(${id || 0})">${editing ? 'Save' : 'Add group'}</button></div>`;
+  $('#modalBg').classList.add('show');
+  setTimeout(() => $('#g_name').focus(), 60);
+}
+
+async function saveGroup(id) {
+  const name = $('#g_name').value.trim();
+  const prefix = $('#g_prefix').value.trim().toUpperCase();
+  if (!name || !prefix) { toast('Name and prefix are required', 'err'); return; }
+  try {
+    await API(id ? '/asset-groups/' + id : '/asset-groups',
+      { method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, prefix }) });
+    ASSET_GROUPS = [];                       // bust cache so dropdowns refresh
+    toast(id ? 'Group updated' : 'Group added', 'ok');
+    await openGroups();                      // reopen manager with fresh data
+    if ($('#view-assets').classList.contains('active')) loadAssets();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function deleteGroup(id, prefix, inUse) {
+  if (inUse) { toast(`${inUse} asset${inUse === 1 ? '' : 's'} still use ${prefix} — move them first`, 'err'); return; }
+  if (!confirm(`Delete the ${prefix} group?`)) return;
+  try {
+    await API('/asset-groups/' + id, { method: 'DELETE' });
+    ASSET_GROUPS = [];
+    toast('Group deleted', 'ok');
+    await openGroups();
+    if ($('#view-assets').classList.contains('active')) loadAssets();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 async function printLabels() {
   let rows;
   try { rows = await API('/assets'); } catch (e) { toast(e.message, 'err'); return; }
@@ -426,7 +507,18 @@ function compCard(c) {
 
   const statusTxt = { valid: 'Valid', expiring: 'Due soon', expired: 'Expired', none: 'No date' }[c.status];
   const canRenew = isReal && c.category !== 'warranty' && c.category !== 'checklist';
-  const renewLabel = c.status === 'expired' ? 'Renew' : 'Renew';
+  const renewLabel = isMachine ? 'Log service' : 'Renew';
+  // A still-valid licence (further out than the warning window) can't be renewed yet.
+  // Machines can always log a service; undated items stay open so a first date can be set.
+  const renewLocked = canRenew && !isMachine && c.status === 'valid' && !!c.expiry_date;
+  const unlockOn = renewLocked ? renewUnlockDate(c) : null;
+
+  const renewBtn = renewLocked
+    ? `<button class="btn small" disabled title="Renew opens ${unlockOn} — ${leadLabel()} before expiry">
+         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+         ${renewLabel}
+       </button>`
+    : `<button class="btn small" onclick='openRenew(${c.id}, ${isMachine})'>${renewLabel}</button>`;
 
   return `
     <div class="card comp ${c.status}">
@@ -444,11 +536,26 @@ function compCard(c) {
       ${c.responsible_person ? `<div class="resp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Responsible: <b>${esc(c.responsible_person)}</b></span></div>` : ''}
       ${c.reference ? `<div class="ref-line">${esc(c.reference)}</div>` : ''}
       ${canRenew ? `<div class="comp-actions">
-        <button class="btn small" onclick='openRenew(${c.id}, ${isMachine})'>${renewLabel}</button>
+        ${renewBtn}
         <button class="btn ghost small" onclick='openHistory(${c.id})'>History</button>
         <button class="btn ghost small" onclick='compReport(${c.id})'>Report</button>
-      </div>` : ''}
+      </div>
+      ${renewLocked ? `<div class="renew-hint"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Still valid — renew opens ${unlockOn}</div>` : ''}` : ''}
     </div>`;
+}
+
+// Date the renew button becomes available: the warning window before expiry.
+function renewUnlockDate(c) {
+  if (!c.expiry_date) return null;
+  const lead = parseInt(settings.notify_lead_days || 60, 10);
+  const d = new Date(c.expiry_date);
+  d.setDate(d.getDate() - lead);
+  return d.toISOString().slice(0, 10);
+}
+function leadLabel() {
+  const lead = parseInt(settings.notify_lead_days || 60, 10);
+  const m = Math.round(lead / 30);
+  return m <= 1 ? '1 month' : `${m} months`;
 }
 
 function openRenew(id, isMachine) {
