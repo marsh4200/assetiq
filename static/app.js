@@ -716,39 +716,31 @@ async function deleteComp(id) {
 }
 
 /* ----------------------------------------------------- machine services --- */
-const MKINDS = { truck: 'Truck', compressor: 'Compressor', pc: 'PC', machine: 'Machine' };
-const mkindLabel = k => MKINDS[k] || 'Machine';
-// Reuse existing category colours so no extra CSS is needed.
-const MKIND_COLORCLASS = { truck: 'vehicle', compressor: 'machine', pc: 'software', machine: 'machine' };
-const MKIND_ICONS = {
-  truck:      '<path d="M5 11l1.5-4.2A2 2 0 0 1 8.4 5.5h7.2a2 2 0 0 1 1.9 1.3L19 11"/><path d="M5 11h14a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-1"/><path d="M3 17v-4a1 1 0 0 1 1-1"/><circle cx="7.5" cy="17" r="1.6"/><circle cx="16.5" cy="17" r="1.6"/>',
-  compressor: '<rect x="3" y="9" width="12" height="9" rx="1.5"/><circle cx="9" cy="13.5" r="2.4"/><path d="M15 11h3a2 2 0 0 1 2 2v5"/><path d="M7 9V7a2 2 0 0 1 2-2h0a2 2 0 0 1 2 2v2"/>',
-  pc:         '<rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/>',
-  machine:    '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
+const MUNIT = { km: 'km', hours: 'hrs' };
+const fmtNum = n => (n === null || n === undefined || n === '') ? '' :
+  String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+const modeCadence = m => {
+  if (m.track_by === 'km')    return `every ${fmtNum(m.interval_km || 0)} km`;
+  if (m.track_by === 'hours') return `every ${fmtNum(m.interval_hours || 0)} hrs`;
+  return `every ${m.interval_months || 6} months`;
 };
-const mkindIcon = k => _svg(MKIND_ICONS[k] || MKIND_ICONS.machine);
-
-// yyyy-mm-dd + N months, clamping the day to the month's length.
-function addMonths(iso, months) {
-  if (!iso) return '';
-  const d = new Date(iso + 'T00:00:00');
-  if (isNaN(d)) return '';
-  const day = d.getDate();
-  d.setDate(1);
-  d.setMonth(d.getMonth() + months);
-  const last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-  d.setDate(Math.min(day, last));
-  return d.toISOString().slice(0, 10);
-}
 
 function machineCard(m) {
   const cc = MKIND_COLORCLASS[m.kind] || 'machine';
-  const statusTxt = { valid: 'On schedule', expiring: 'Due soon', expired: 'Overdue', none: 'No date' }[m.status];
-  const dateBlocks = [];
-  if (m.last_service_date) dateBlocks.push(
-    `<div><div class="k">Last service</div><div class="v">${esc(m.last_service_date)}</div></div>`);
-  if (m.next_service_date) dateBlocks.push(
-    `<div><div class="k">Next service</div><div class="v">${esc(m.next_service_date)}</div>${daysBadge({ days_remaining: m.days_until_service, status: m.status })}</div>`);
+  const statusTxt = { valid: 'On schedule', expiring: 'Due soon', expired: 'Overdue', none: 'No schedule' }[m.status] || '';
+  const usage = m.track_by === 'km' || m.track_by === 'hours';
+  const unit = MUNIT[m.track_by] || '';
+  const blocks = [];
+  if (usage) {
+    blocks.push(`<div><div class="k">Current</div><div class="v">${fmtNum(m.current_reading || 0)} ${unit}</div></div>`);
+    if (m.next_service_reading) blocks.push(
+      `<div><div class="k">Service at</div><div class="v">${fmtNum(m.next_service_reading)} ${unit}</div>${m.remaining_label ? `<span class="when ${m.status}">${esc(m.remaining_label)}</span>` : ''}</div>`);
+  } else {
+    if (m.last_service_date) blocks.push(
+      `<div><div class="k">Last service</div><div class="v">${esc(m.last_service_date)}</div></div>`);
+    if (m.next_service_date) blocks.push(
+      `<div><div class="k">Next service</div><div class="v">${esc(m.next_service_date)}</div>${daysBadge({ days_remaining: m.days_until_service, status: m.status })}</div>`);
+  }
   const metaChips = [];
   if (m.location) metaChips.push(`<span class="ref-line">📍 ${esc(m.location)}</span>`);
   if (m.serial_number) metaChips.push(`<span class="ref-line">${esc(m.serial_number)}</span>`);
@@ -758,17 +750,18 @@ function machineCard(m) {
       <div class="top">
         <div style="flex:1;min-width:0">
           <div class="name">${esc(m.name)}</div>
-          <div class="catline"><span class="cat-ico cat-${cc}">${mkindIcon(m.kind)}</span><span class="cat">${mkindLabel(m.kind)} · every ${m.interval_months || 6} months</span></div>
+          <div class="catline"><span class="cat-ico cat-${cc}">${mkindIcon(m.kind)}</span><span class="cat">${mkindLabel(m.kind)} · ${modeCadence(m)}</span></div>
         </div>
         <span class="status ${m.status}">${statusTxt}</span>
         <button class="iconbtn" onclick='openMachine(${m.id})' title="Edit">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
         </button>
       </div>
-      ${dateBlocks.length ? `<div class="dates">${dateBlocks.join('')}</div>` : ''}
+      ${blocks.length ? `<div class="dates">${blocks.join('')}</div>` : ''}
       ${metaChips.length ? `<div style="margin-top:8px;display:flex;gap:12px;flex-wrap:wrap">${metaChips.join('')}</div>` : ''}
       <div class="comp-actions">
         <button class="btn small" onclick='openLogService(${m.id})'>Log service</button>
+        ${usage ? `<button class="btn ghost small" onclick='openReading(${m.id})'>Update ${unit}</button>` : ''}
         <button class="btn ghost small" onclick='openMachineHistory(${m.id})'>History</button>
       </div>
     </div>`;
@@ -785,10 +778,9 @@ async function loadMachines() {
   const list = $('#machineList');
   if (!rows.length) {
     list.innerHTML = emptyState('box', (q || kind) ? 'No matches' : 'No machines yet',
-      (q || kind) ? 'Try a different search.' : 'Add a machine to start tracking its service schedule.');
+      (q || kind) ? 'Try a different search.' : 'Import your machine assets, or add one to start tracking its service schedule.');
     return;
   }
-  // Group by type, in the dropdown order, then any others.
   const order = Object.keys(MKINDS);
   const byKind = {};
   rows.forEach(m => { (byKind[m.kind] = byKind[m.kind] || []).push(m); });
@@ -810,64 +802,144 @@ async function loadMachines() {
   }).join('');
 }
 
+/* ---- import machine-group assets from the register ---- */
+function openImport() {
+  API('/machines/importable').then(rows => {
+    if (!rows.length) { toast('No untracked machine assets found', 'err'); return; }
+    $('#modal').innerHTML = `
+      <div class="mhead"><h3>Import from assets</h3><button class="iconbtn" onclick="closeModal()">✕</button></div>
+      <div class="mbody">
+        <div class="numhint">Machine-group assets from your register that aren’t tracked yet. Tick the ones to add — each starts on a 6-month schedule you can switch to km or hours.</div>
+        ${rows.map(a => `
+          <label style="display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--line)">
+            <input type="checkbox" class="imp-cb" value="${a.id}" checked>
+            <span class="mono" style="color:var(--accent)">${esc(a.label || '')}</span>
+            <span style="flex:1">${esc(a.name)}</span>
+          </label>`).join('')}
+      </div>
+      <div class="mfoot"><button class="btn" onclick="importMachines()">Import selected</button></div>`;
+    $('#modalBg').classList.add('show');
+  }).catch(e => toast(e.message, 'err'));
+}
+
+async function importMachines() {
+  const ids = [...document.querySelectorAll('.imp-cb:checked')].map(c => parseInt(c.value, 10));
+  if (!ids.length) { toast('Select at least one machine', 'err'); return; }
+  try {
+    const r = await API('/machines/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ asset_ids: ids }) });
+    closeModal(); toast(`Imported ${r.added} machine${r.added === 1 ? '' : 's'}`, 'ok');
+    loadMachines(); refreshBell();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/* ---- add / edit ---- */
 function openMachine(id) {
   const editing = id != null;
-  const get = editing ? API('/machines').then(r => r.find(x => x.id === id)) : Promise.resolve({ kind: 'machine', interval_months: 6 });
+  const get = editing ? API('/machines').then(r => r.find(x => x.id === id))
+                      : Promise.resolve({ kind: 'machine', track_by: 'months', interval_months: 6 });
   get.then(m => {
     m = m || {};
-    const opts = Object.entries(MKINDS).map(([v, l]) =>
+    const kindOpts = Object.entries(MKINDS).map(([v, l]) =>
       `<option value="${v}" ${m.kind === v ? 'selected' : ''}>${l}</option>`).join('');
+    const modeOpts = [['months', 'Time — months'], ['km', 'Distance — km'], ['hours', 'Run time — hours']]
+      .map(([v, l]) => `<option value="${v}" ${(m.track_by || 'months') === v ? 'selected' : ''}>${l}</option>`).join('');
+    const uIntervalVal = m.track_by === 'hours' ? (m.interval_hours || 0) : (m.interval_km || 0);
     $('#modal').innerHTML = `
       <div class="mhead">
         <h3>${editing ? 'Edit machine' : 'New machine'}</h3>
         <button class="iconbtn" onclick="closeModal()">✕</button>
       </div>
       <div class="mbody">
-        <div class="field"><label>Name</label><input id="m_name" value="${esc(m.name)}" placeholder="e.g. Iveco truck"></div>
+        <div class="field"><label>Name</label><input id="m_name" value="${esc(m.name)}" placeholder="e.g. Atlas Copco compressor"></div>
         <div class="grid2">
-          <div class="field"><label>Type</label><select id="m_kind">${opts}</select></div>
-          <div class="field"><label>Service every (months)</label><input id="m_interval" type="number" min="1" value="${esc(m.interval_months || 6)}" onchange="machineRecalcNext()"></div>
+          <div class="field"><label>Type</label><select id="m_kind">${kindOpts}</select></div>
+          <div class="field"><label>Track service by</label><select id="m_track" onchange="machineModeToggle()">${modeOpts}</select></div>
         </div>
-        <div class="grid2">
-          <div class="field"><label>Last service</label><input id="m_last" type="date" value="${esc(m.last_service_date)}" onchange="machineRecalcNext()"></div>
+
+        <div id="monthsWrap">
+          <div class="grid2">
+            <div class="field"><label>Service every (months)</label><input id="m_interval_m" type="number" min="1" value="${esc(m.interval_months || 6)}" onchange="machineRecalcNext()"></div>
+            <div class="field"><label>Last service</label><input id="m_last" type="date" value="${esc(m.last_service_date)}" onchange="machineRecalcNext()"></div>
+          </div>
           <div class="field"><label>Next service due</label><input id="m_next" type="date" value="${esc(m.next_service_date)}" oninput="this.dataset.touched=1"></div>
+          <div class="numhint">Leave “next service due” blank to auto-set your interval after the last service.</div>
         </div>
-        <div class="numhint">Leave “next service due” blank to auto-set it the chosen number of months after the last service.</div>
+
+        <div id="usageWrap" style="display:none">
+          <div class="grid2">
+            <div class="field"><label>Service every (<span class="unitLbl">km</span>)</label><input id="m_interval_u" type="number" min="0" value="${esc(uIntervalVal)}" onchange="machineRecalcReading()"></div>
+            <div class="field"><label>Current reading (<span class="unitLbl">km</span>)</label><input id="m_current" type="number" min="0" value="${esc(m.current_reading || 0)}"></div>
+          </div>
+          <div class="grid2">
+            <div class="field"><label>Last service at (<span class="unitLbl">km</span>)</label><input id="m_last_r" type="number" min="0" value="${esc(m.last_service_reading || 0)}" onchange="machineRecalcReading()"></div>
+            <div class="field"><label>Next service at (<span class="unitLbl">km</span>)</label><input id="m_next_r" type="number" min="0" value="${esc(m.next_service_reading || 0)}" oninput="this.dataset.touched=1"></div>
+          </div>
+          <div class="numhint">Leave “next service at” blank to auto-set last-service reading + interval.</div>
+        </div>
+
         <div class="grid2">
           <div class="field"><label>Location</label><input id="m_location" value="${esc(m.location)}"></div>
           <div class="field"><label>Serial number</label><input id="m_serial" value="${esc(m.serial_number)}"></div>
         </div>
         <div class="field"><label>Notes</label><textarea id="m_notes">${esc(m.notes)}</textarea></div>
+        <input type="hidden" id="m_asset_id" value="${m.asset_id != null ? m.asset_id : ''}">
       </div>
       <div class="mfoot">
         ${editing ? `<button class="btn danger" onclick="deleteMachine(${id})">Delete</button>` : ''}
         <button class="btn" onclick="saveMachine(${editing ? id : 'null'})">Save</button>
       </div>`;
     $('#modalBg').classList.add('show');
+    machineModeToggle();
     setTimeout(() => $('#m_name').focus(), 60);
   });
 }
 
-// Keep the read-only-ish "next" preview in step when last/interval change and
-// the user hasn't typed their own next date yet.
+function machineModeToggle() {
+  const mode = $('#m_track').value;
+  const usage = mode === 'km' || mode === 'hours';
+  $('#monthsWrap').style.display = usage ? 'none' : 'block';
+  $('#usageWrap').style.display = usage ? 'block' : 'none';
+  const unit = mode === 'hours' ? 'hrs' : 'km';
+  document.querySelectorAll('#usageWrap .unitLbl').forEach(e => e.textContent = unit);
+}
+
 function machineRecalcNext() {
   const last = $('#m_last').value;
-  const interval = parseInt($('#m_interval').value, 10) || 6;
+  const interval = parseInt($('#m_interval_m').value, 10) || 6;
   const next = $('#m_next');
   if (last && !next.dataset.touched) next.value = addMonths(last, interval);
 }
 
+function machineRecalcReading() {
+  const last = parseInt($('#m_last_r').value, 10) || 0;
+  const intv = parseInt($('#m_interval_u').value, 10) || 0;
+  const next = $('#m_next_r');
+  if (last && intv && !next.dataset.touched) next.value = last + intv;
+}
+
 async function saveMachine(id) {
+  const mode = $('#m_track').value;
+  const assetRaw = $('#m_asset_id').value;
   const body = {
     name: $('#m_name').value.trim(),
     kind: $('#m_kind').value,
-    interval_months: parseInt($('#m_interval').value, 10) || 6,
-    last_service_date: $('#m_last').value,
-    next_service_date: $('#m_next').value,
+    track_by: mode,
     location: $('#m_location').value.trim(),
     serial_number: $('#m_serial').value.trim(),
     notes: $('#m_notes').value.trim(),
+    asset_id: assetRaw === '' ? null : parseInt(assetRaw, 10),
   };
+  if (mode === 'months') {
+    body.interval_months = parseInt($('#m_interval_m').value, 10) || 6;
+    body.last_service_date = $('#m_last').value;
+    body.next_service_date = $('#m_next').value;
+  } else {
+    const intv = parseInt($('#m_interval_u').value, 10) || 0;
+    if (mode === 'km') body.interval_km = intv; else body.interval_hours = intv;
+    body.last_service_reading = parseInt($('#m_last_r').value, 10) || 0;
+    body.next_service_reading = parseInt($('#m_next_r').value, 10) || 0;
+    body.current_reading = parseInt($('#m_current').value, 10) || 0;
+  }
   if (!body.name) { toast('Name is required', 'err'); return; }
   try {
     await API(id ? '/machines/' + id : '/machines',
@@ -883,27 +955,44 @@ async function deleteMachine(id) {
   catch (e) { toast(e.message, 'err'); }
 }
 
+/* ---- log a service (per tracking mode) ---- */
 function openLogService(id) {
   API('/machines').then(r => r.find(x => x.id === id)).then(m => {
     m = m || {};
     const today = new Date().toISOString().slice(0, 10);
-    const interval = m.interval_months || 6;
+    const usage = m.track_by === 'km' || m.track_by === 'hours';
+    const unit = MUNIT[m.track_by] || '';
+    let fields;
+    if (usage) {
+      const intv = (m.track_by === 'hours' ? m.interval_hours : m.interval_km) || 0;
+      const cur = m.current_reading || 0;
+      fields = `
+        <div class="grid2">
+          <div class="field"><label>Service date</label><input id="ls_date" type="date" value="${today}"></div>
+          <div class="field"><label>Reading at service (${unit})</label><input id="ls_reading" type="number" min="0" value="${cur}" onchange="logReadingRecalc(${intv})"></div>
+        </div>
+        <div class="field"><label>Next service at (${unit})</label><input id="ls_next_r" type="number" min="0" value="${cur + intv}" oninput="this.dataset.touched=1"></div>`;
+    } else {
+      const intv = m.interval_months || 6;
+      fields = `
+        <div class="grid2">
+          <div class="field"><label>Service date</label><input id="ls_date" type="date" value="${today}" onchange="logServiceRecalc(${intv})"></div>
+          <div class="field"><label>Next service due</label><input id="ls_next" type="date" value="${addMonths(today, intv)}"></div>
+        </div>`;
+    }
     $('#modal').innerHTML = `
       <div class="mhead"><h3>Log service · ${esc(m.name || '')}</h3><button class="iconbtn" onclick="closeModal()">✕</button></div>
       <div class="mbody">
-        <div class="grid2">
-          <div class="field"><label>Service date</label><input id="ls_date" type="date" value="${today}" onchange="logServiceRecalc(${interval})"></div>
-          <div class="field"><label>Next service due</label><input id="ls_next" type="date" value="${addMonths(today, interval)}"></div>
-        </div>
+        ${fields}
         <div class="field"><label>Service type</label><input id="ls_type" value="Basic service"></div>
         <div class="grid2">
           <div class="field"><label>Performed by <span style="text-transform:none;color:var(--muted)">(optional)</span></label><input id="ls_by"></div>
           <div class="field"><label>Cost <span style="text-transform:none;color:var(--muted)">(optional)</span></label><input id="ls_cost" placeholder="e.g. R1 250"></div>
         </div>
         <div class="field"><label>Notes <span style="text-transform:none;color:var(--muted)">(optional)</span></label><textarea id="ls_notes" placeholder="What was done"></textarea></div>
-        <div class="numhint">This is added to the machine’s history and rolls the next service date forward.</div>
+        <div class="numhint">This is added to the machine’s history and rolls its next service forward.</div>
       </div>
-      <div class="mfoot"><button class="btn" onclick="submitLogService(${id})">Save service</button></div>`;
+      <div class="mfoot"><button class="btn" onclick="submitLogService(${id}, '${m.track_by || 'months'}')">Save service</button></div>`;
     $('#modalBg').classList.add('show');
     setTimeout(() => $('#ls_date').focus(), 60);
   });
@@ -913,20 +1002,74 @@ function logServiceRecalc(interval) {
   const d = $('#ls_date').value;
   if (d) $('#ls_next').value = addMonths(d, interval || 6);
 }
+function logReadingRecalc(interval) {
+  const r = parseInt($('#ls_reading').value, 10) || 0;
+  const next = $('#ls_next_r');
+  if (!next.dataset.touched) next.value = r + (interval || 0);
+}
 
-async function submitLogService(id) {
+async function submitLogService(id, mode) {
+  const usage = mode === 'km' || mode === 'hours';
   const body = {
     service_date: $('#ls_date').value,
-    next_due: $('#ls_next').value,
     service_type: $('#ls_type').value.trim() || 'Basic service',
     performed_by: $('#ls_by').value.trim(),
     cost: $('#ls_cost').value.trim(),
     notes: $('#ls_notes').value.trim(),
   };
+  if (usage) {
+    body.reading = parseInt($('#ls_reading').value, 10) || 0;
+    body.next_due_reading = parseInt($('#ls_next_r').value, 10) || 0;
+  } else {
+    body.next_due = $('#ls_next').value;
+  }
   if (!body.service_date) { toast('Service date is required', 'err'); return; }
   try {
     await API('/machines/' + id + '/service', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     closeModal(); toast('Service logged', 'ok');
+    loadMachines(); refreshBell();
+    if ($('#view-dashboard').classList.contains('active')) loadDashboard();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/* ---- quick reading update (km / hours machines) ---- */
+let _machineEdit = null;
+function openReading(id) {
+  API('/machines').then(r => r.find(x => x.id === id)).then(m => {
+    m = m || {};
+    _machineEdit = m;
+    const unit = MUNIT[m.track_by] || '';
+    $('#modal').innerHTML = `
+      <div class="mhead"><h3>Update reading · ${esc(m.name || '')}</h3><button class="iconbtn" onclick="closeModal()">✕</button></div>
+      <div class="mbody">
+        <div class="field"><label>Current reading (${unit})</label><input id="rd_val" type="number" min="0" value="${m.current_reading || 0}"></div>
+        <div class="numhint">Updates how close this machine is to its next service.</div>
+      </div>
+      <div class="mfoot"><button class="btn" onclick="submitReading(${id})">Save</button></div>`;
+    $('#modalBg').classList.add('show');
+    setTimeout(() => $('#rd_val').focus(), 60);
+  });
+}
+
+function machineToBody(m) {
+  return {
+    name: m.name, kind: m.kind, track_by: m.track_by || 'months',
+    location: m.location || '', serial_number: m.serial_number || '',
+    asset_id: m.asset_id != null ? m.asset_id : null,
+    interval_months: m.interval_months || 6,
+    interval_km: m.interval_km || 0, interval_hours: m.interval_hours || 0,
+    last_service_date: m.last_service_date || '', next_service_date: m.next_service_date || '',
+    last_service_reading: m.last_service_reading || 0, next_service_reading: m.next_service_reading || 0,
+    current_reading: m.current_reading || 0, notes: m.notes || '',
+  };
+}
+
+async function submitReading(id) {
+  const body = machineToBody(_machineEdit || {});
+  body.current_reading = parseInt($('#rd_val').value, 10) || 0;
+  try {
+    await API('/machines/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    closeModal(); toast('Reading updated', 'ok');
     loadMachines(); refreshBell();
     if ($('#view-dashboard').classList.contains('active')) loadDashboard();
   } catch (e) { toast(e.message, 'err'); }
@@ -939,15 +1082,23 @@ async function openMachineHistory(id) {
     <div class="mhead"><h3>Service history</h3><button class="iconbtn" onclick="closeModal()">✕</button></div>
     <div class="mbody">
       ${!hist.length ? '<p style="color:var(--muted)">No services logged yet.</p>' :
-        hist.map(h => `
+        hist.map(h => {
+          const usage = h.reading_unit === 'km' || h.reading_unit === 'hours';
+          const unit = h.reading_unit === 'hours' ? 'hrs' : 'km';
+          const line = usage
+            ? `<b>${esc(h.service_date || '—')}</b> <span class="arr">·</span> <span class="old">${fmtNum(h.reading)} ${unit}</span>`
+            : `<b>${esc(h.service_date || '—')}</b> <span class="arr">→</span> <span class="old">next ${esc(h.next_due || '—')}</span>`;
+          return `
           <div class="hist-row">
-            <div class="hist-line"><b>${esc(h.service_date || '—')}</b> <span class="arr">→</span> <span class="old">next ${esc(h.next_due || '—')}</span></div>
+            <div class="hist-line">${line}</div>
             <div class="hist-meta">${esc(h.service_type || 'Service')}${h.performed_by ? ' · ' + esc(h.performed_by) : ''}${h.cost ? ' · ' + esc(h.cost) : ''}${h.logged_at ? ' · logged ' + esc(h.logged_at.replace('T', ' ').slice(0, 16)) : ''}</div>
             ${h.notes ? `<div class="hist-note">${esc(h.notes)}</div>` : ''}
-          </div>`).join('')}
+          </div>`;
+        }).join('')}
     </div>`;
   $('#modalBg').classList.add('show');
 }
+
 
 /* ------------------------------------------------------------ settings ---- */
 async function loadSettings() {

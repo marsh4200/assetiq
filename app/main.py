@@ -24,7 +24,8 @@ def _startup():
     auth.ensure_default_admin()
     database.ensure_default_checklist()
     database.ensure_default_groups()
-    database.ensure_default_machines()
+    database.purge_demo_machines()
+    database.ensure_machines_from_assets()
     backup.start_scheduler()
 
 
@@ -75,19 +76,32 @@ class MachineIn(BaseModel):
     kind: str = "machine"            # truck | compressor | pc | machine
     location: str = ""
     serial_number: str = ""
+    asset_id: int | None = None
+    track_by: str = "months"         # months | km | hours
     interval_months: int = 6
+    interval_km: int = 0
+    interval_hours: int = 0
     last_service_date: str = ""
-    next_service_date: str = ""      # blank -> auto from last + interval
+    next_service_date: str = ""      # blank -> auto from last + interval (months)
+    last_service_reading: int = 0
+    next_service_reading: int = 0    # blank/0 -> auto from last reading + interval
+    current_reading: int = 0
     notes: str = ""
 
 
 class ServiceLogIn(BaseModel):
     service_date: str = ""           # blank -> today
-    next_due: str = ""               # blank -> service_date + interval
+    next_due: str = ""               # months: blank -> service_date + interval
+    reading: int = 0                 # km / hours: meter reading at this service
+    next_due_reading: int = 0        # km / hours: blank -> reading + interval
     service_type: str = "Basic service"
     performed_by: str = ""
     cost: str = ""
     notes: str = ""
+
+
+class MachineImportIn(BaseModel):
+    asset_ids: list[int] = []
 
 
 class SettingsIn(BaseModel):
@@ -575,6 +589,8 @@ def compliance_history(item_id: int, user: dict = Depends(auth.current_user)):
 
 # ------------------------------------------------------ machine services ----
 MACHINE_KINDS = {"truck", "compressor", "pc", "machine"}
+TRACK_MODES = {"months", "km", "hours"}
+UNIT_LABEL = {"km": "km", "hours": "hrs"}
 
 
 def _machine_lead():
@@ -584,12 +600,58 @@ def _machine_lead():
         return 30
 
 
+def _int(v, default=0):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
 def _decorate_machine(row, lead):
+    """Add status + a human-readable 'remaining' to a machine, by its track mode.
+
+    months -> status from days to next_service_date (1-month lead by default).
+    km/hours -> status from reading units left until next_service_reading; due
+    soon once within ~10% of the interval.
+    """
     d = dict(row)
-    days = _days_until(d.get("next_service_date", ""))
-    d["days_until_service"] = days
-    d["days_remaining"] = days
-    d["status"] = _status(days, lead)
+    track = d.get("track_by") or "months"
+    d["track_by"] = track
+
+    if track in ("km", "hours"):
+        interval = _int(d.get("interval_km") if track == "km" else d.get("interval_hours"))
+        nxt = _int(d.get("next_service_reading"))
+        cur = _int(d.get("current_reading"))
+        unit = UNIT_LABEL[track]
+        d["days_until_service"] = None
+        if nxt:
+            remaining = nxt - cur
+            d["units_remaining"] = remaining
+            d["remaining_label"] = (
+                f"{remaining:,} {unit} left" if remaining >= 0
+                else f"Overdue {abs(remaining):,} {unit}"
+            )
+            thr = max(1, round(interval * 0.1)) if interval else 0
+            if remaining < 0:
+                d["status"] = "expired"
+            elif remaining <= thr:
+                d["status"] = "expiring"
+            else:
+                d["status"] = "valid"
+            # Sort key: keep usage machines interleaved sensibly with date ones.
+            d["days_remaining"] = remaining
+        else:
+            d["units_remaining"] = None
+            d["remaining_label"] = ""
+            d["status"] = "none"
+            d["days_remaining"] = None
+    else:
+        days = _days_until(d.get("next_service_date", ""))
+        d["days_until_service"] = days
+        d["days_remaining"] = days
+        d["units_remaining"] = None
+        d["remaining_label"] = ""
+        d["status"] = _status(days, lead)
     return d
 
 
@@ -615,13 +677,40 @@ def list_machines(kind: str = "", q: str = "", user: dict = Depends(auth.current
     return items
 
 
-def _machine_next(last, interval, given):
-    """Resolve the next-service date: explicit value wins, else last + interval."""
-    if given:
-        return given
-    if last:
-        return database.add_months(last, interval or 6)
-    return ""
+@app.get("/api/machines/importable")
+def importable_machines(user: dict = Depends(auth.current_user)):
+    """Machine-group assets from the register that aren't tracked yet."""
+    with database.db() as conn:
+        linked = {r["asset_id"] for r in conn.execute(
+            "SELECT asset_id FROM machines WHERE asset_id IS NOT NULL").fetchall()}
+        assets = database.list_machine_assets(conn)
+    return [a for a in assets if a["id"] not in linked]
+
+
+@app.post("/api/machines/import")
+def import_machines(body: MachineImportIn, user: dict = Depends(auth.current_user)):
+    ids = set(body.asset_ids or [])
+    if not ids:
+        raise HTTPException(400, "Select at least one machine to import")
+    added = database.import_machines_from_assets(asset_ids=ids)
+    return {"ok": True, "added": added}
+
+
+def _resolve_machine_dates(m: "MachineIn"):
+    """Work out next-service date/reading for a create/update based on track mode."""
+    track = m.track_by if m.track_by in TRACK_MODES else "months"
+    next_date = m.next_service_date
+    next_reading = m.next_service_reading
+    if track == "months":
+        if not next_date and m.last_service_date:
+            next_date = database.add_months(m.last_service_date, m.interval_months or 6)
+    elif track == "km":
+        if not next_reading and m.last_service_reading:
+            next_reading = m.last_service_reading + (m.interval_km or 0)
+    elif track == "hours":
+        if not next_reading and m.last_service_reading:
+            next_reading = m.last_service_reading + (m.interval_hours or 0)
+    return track, next_date, next_reading
 
 
 @app.post("/api/machines")
@@ -629,14 +718,17 @@ def create_machine(m: MachineIn, user: dict = Depends(auth.current_user)):
     if not m.name.strip():
         raise HTTPException(400, "Name is required")
     kind = m.kind if m.kind in MACHINE_KINDS else "machine"
-    interval = m.interval_months or 6
-    nxt = _machine_next(m.last_service_date, interval, m.next_service_date)
+    track, next_date, next_reading = _resolve_machine_dates(m)
     with database.db() as conn:
         cur = conn.execute(
-            "INSERT INTO machines (name, kind, location, serial_number, interval_months, "
-            "last_service_date, next_service_date, notes) VALUES (?,?,?,?,?,?,?,?)",
-            (m.name.strip(), kind, m.location, m.serial_number, interval,
-             m.last_service_date, nxt, m.notes),
+            "INSERT INTO machines (name, kind, location, serial_number, asset_id, track_by, "
+            "interval_months, interval_km, interval_hours, last_service_date, next_service_date, "
+            "last_service_reading, next_service_reading, current_reading, notes) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (m.name.strip(), kind, m.location, m.serial_number, m.asset_id, track,
+             m.interval_months or 6, m.interval_km or 0, m.interval_hours or 0,
+             m.last_service_date, next_date, m.last_service_reading or 0,
+             next_reading or 0, m.current_reading or 0, m.notes),
         )
         row = conn.execute("SELECT * FROM machines WHERE id=?", (cur.lastrowid,)).fetchone()
     return _decorate_machine(row, _machine_lead())
@@ -645,16 +737,19 @@ def create_machine(m: MachineIn, user: dict = Depends(auth.current_user)):
 @app.put("/api/machines/{machine_id}")
 def update_machine(machine_id: int, m: MachineIn, user: dict = Depends(auth.current_user)):
     kind = m.kind if m.kind in MACHINE_KINDS else "machine"
-    interval = m.interval_months or 6
-    nxt = _machine_next(m.last_service_date, interval, m.next_service_date)
+    track, next_date, next_reading = _resolve_machine_dates(m)
     with database.db() as conn:
         if not conn.execute("SELECT id FROM machines WHERE id=?", (machine_id,)).fetchone():
             raise HTTPException(404, "Machine not found")
         conn.execute(
-            "UPDATE machines SET name=?, kind=?, location=?, serial_number=?, interval_months=?, "
-            "last_service_date=?, next_service_date=?, notes=? WHERE id=?",
-            (m.name.strip(), kind, m.location, m.serial_number, interval,
-             m.last_service_date, nxt, m.notes, machine_id),
+            "UPDATE machines SET name=?, kind=?, location=?, serial_number=?, asset_id=?, "
+            "track_by=?, interval_months=?, interval_km=?, interval_hours=?, last_service_date=?, "
+            "next_service_date=?, last_service_reading=?, next_service_reading=?, current_reading=?, "
+            "notes=? WHERE id=?",
+            (m.name.strip(), kind, m.location, m.serial_number, m.asset_id, track,
+             m.interval_months or 6, m.interval_km or 0, m.interval_hours or 0,
+             m.last_service_date, next_date, m.last_service_reading or 0,
+             next_reading or 0, m.current_reading or 0, m.notes, machine_id),
         )
         row = conn.execute("SELECT * FROM machines WHERE id=?", (machine_id,)).fetchone()
     return _decorate_machine(row, _machine_lead())
@@ -675,19 +770,40 @@ def log_machine_service(machine_id: int, s: ServiceLogIn, user: dict = Depends(a
         if not row:
             raise HTTPException(404, "Machine not found")
         m = dict(row)
-        interval = m.get("interval_months") or 6
+        track = m.get("track_by") or "months"
         service_date = s.service_date or date.today().isoformat()
-        next_due = s.next_due or database.add_months(service_date, interval)
-        conn.execute(
-            "INSERT INTO machine_services (machine_id, service_date, next_due, service_type, "
-            "performed_by, cost, notes, logged_by) VALUES (?,?,?,?,?,?,?,?)",
-            (machine_id, service_date, next_due, s.service_type.strip() or "Basic service",
-             s.performed_by, s.cost, s.notes, user.get("username", "")),
-        )
-        conn.execute(
-            "UPDATE machines SET last_service_date=?, next_service_date=? WHERE id=?",
-            (service_date, next_due, machine_id),
-        )
+
+        if track in ("km", "hours"):
+            interval = _int(m.get("interval_km") if track == "km" else m.get("interval_hours"))
+            reading = _int(s.reading)
+            next_reading = _int(s.next_due_reading) or (reading + interval)
+            conn.execute(
+                "INSERT INTO machine_services (machine_id, service_date, next_due, reading, "
+                "reading_unit, service_type, performed_by, cost, notes, logged_by) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (machine_id, service_date, "", reading, track,
+                 s.service_type.strip() or "Basic service",
+                 s.performed_by, s.cost, s.notes, user.get("username", "")),
+            )
+            conn.execute(
+                "UPDATE machines SET last_service_date=?, last_service_reading=?, "
+                "next_service_reading=?, current_reading=? WHERE id=?",
+                (service_date, reading, next_reading, max(reading, _int(m.get("current_reading"))),
+                 machine_id),
+            )
+        else:
+            interval = _int(m.get("interval_months"), 6) or 6
+            next_due = s.next_due or database.add_months(service_date, interval)
+            conn.execute(
+                "INSERT INTO machine_services (machine_id, service_date, next_due, service_type, "
+                "performed_by, cost, notes, logged_by) VALUES (?,?,?,?,?,?,?,?)",
+                (machine_id, service_date, next_due, s.service_type.strip() or "Basic service",
+                 s.performed_by, s.cost, s.notes, user.get("username", "")),
+            )
+            conn.execute(
+                "UPDATE machines SET last_service_date=?, next_service_date=? WHERE id=?",
+                (service_date, next_due, machine_id),
+            )
         out = conn.execute("SELECT * FROM machines WHERE id=?", (machine_id,)).fetchone()
     return _decorate_machine(out, _machine_lead())
 
@@ -716,16 +832,19 @@ def notifications(user: dict = Depends(auth.current_user)):
         for r in conn.execute("SELECT * FROM machines").fetchall():
             d = _decorate_machine(r, mlead)
             if d["status"] in ("expiring", "expired"):
+                usage = d.get("track_by") in ("km", "hours")
                 alerts.append({
                     "id": f"machine-{r['id']}",
                     "name": f"Service · {r['name']}",
                     "category": "machine",
-                    "last_service_date": d.get("last_service_date", ""),
-                    "next_service_date": d.get("next_service_date", ""),
-                    "days_remaining": d["days_remaining"],
-                    "days_until_service": d["days_until_service"],
+                    "track_by": d.get("track_by"),
+                    "last_service_date": "" if usage else d.get("last_service_date", ""),
+                    "next_service_date": "" if usage else d.get("next_service_date", ""),
+                    "days_remaining": None if usage else d["days_remaining"],
+                    "days_until_service": None if usage else d["days_until_service"],
+                    "remaining_label": d.get("remaining_label", ""),
                     "status": d["status"],
-                    "reference": (r["location"] or "").strip(),
+                    "reference": d.get("remaining_label") if usage else (r["location"] or "").strip(),
                 })
         # warranties from the asset register feed the same dashboard
         for r in conn.execute(
@@ -816,9 +935,11 @@ def export_machines(user: dict = Depends(auth.current_user)):
     with database.db() as conn:
         rows = [_decorate_machine(r, lead)
                 for r in conn.execute("SELECT * FROM machines").fetchall()]
-    fields = ["name", "kind", "location", "serial_number", "interval_months",
-              "last_service_date", "next_service_date", "status",
-              "days_remaining", "notes"]
+    fields = ["name", "kind", "track_by", "location", "serial_number",
+              "interval_months", "interval_km", "interval_hours",
+              "last_service_date", "next_service_date",
+              "current_reading", "next_service_reading",
+              "status", "remaining_label", "days_remaining", "notes"]
     return _csv_response(rows, fields, "assetiq-machines.csv")
 
 

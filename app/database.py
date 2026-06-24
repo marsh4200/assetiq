@@ -230,6 +230,25 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_mservices_machine ON machine_services(machine_id)"
         )
 
+        # --- machines: usage-based tracking (km / hours) + asset link --------
+        mcols = {r["name"] for r in conn.execute("PRAGMA table_info(machines)").fetchall()}
+        for col, decl in (
+            ("asset_id",             "INTEGER"),
+            ("track_by",             "TEXT DEFAULT 'months'"),   # months | km | hours
+            ("interval_km",          "INTEGER DEFAULT 0"),
+            ("interval_hours",       "INTEGER DEFAULT 0"),
+            ("last_service_reading", "INTEGER DEFAULT 0"),
+            ("next_service_reading", "INTEGER DEFAULT 0"),
+            ("current_reading",      "INTEGER DEFAULT 0"),
+        ):
+            if col not in mcols:
+                conn.execute(f"ALTER TABLE machines ADD COLUMN {col} {decl}")
+        scols = {r["name"] for r in conn.execute("PRAGMA table_info(machine_services)").fetchall()}
+        if "reading" not in scols:
+            conn.execute("ALTER TABLE machine_services ADD COLUMN reading INTEGER DEFAULT 0")
+        if "reading_unit" not in scols:
+            conn.execute("ALTER TABLE machine_services ADD COLUMN reading_unit TEXT DEFAULT ''")
+
 
 import json as _json
 
@@ -314,49 +333,110 @@ def add_months(iso_str, months):
     return _date(y, m, min(d.day, last)).isoformat()
 
 
-# Machines seeded on first run: name, kind. Each gets a basic-service history.
-DEFAULT_MACHINES = [
-    ("Truck", "truck"),
-    ("Compressor", "compressor"),
-    ("PC", "pc"),
-]
+# Asset-register groups whose machines feed the service tracker. Matched by a
+# group name containing "machine", plus the default Workshop-Machines prefix.
+MACHINE_GROUP_PREFIXES = ("WM",)
 
 
-def ensure_default_machines():
-    """Seed the three workshop machines with two basic-service records each.
+def machine_group_prefixes(conn):
+    """Prefixes of asset groups that represent machines (name ~ 'machine', or WM)."""
+    prefixes = set(MACHINE_GROUP_PREFIXES)
+    try:
+        for r in conn.execute(
+            "SELECT prefix FROM asset_groups WHERE LOWER(name) LIKE '%machine%'"
+        ).fetchall():
+            if r["prefix"]:
+                prefixes.add(r["prefix"])
+    except Exception:
+        pass
+    return prefixes
 
-    Last service is dated to last month, so the next service falls six months
-    after that. The earlier record sits a full service cycle before it, giving a
-    believable every-six-months history.
+
+def _machine_asset_label(prefix, no):
+    return f"{prefix or ''}{str(no).zfill(3)}" if no is not None else ""
+
+
+def list_machine_assets(conn):
+    """Assets that live in a machine group, with their label."""
+    prefixes = machine_group_prefixes(conn)
+    if not prefixes:
+        return []
+    qmarks = ",".join("?" for _ in prefixes)
+    rows = conn.execute(
+        f"SELECT id, prefix, asset_no, name, serial_number, location "
+        f"FROM assets WHERE prefix IN ({qmarks}) ORDER BY prefix, asset_no",
+        tuple(prefixes),
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["label"] = _machine_asset_label(d["prefix"], d["asset_no"])
+        out.append(d)
+    return out
+
+
+def purge_demo_machines():
+    """One-time cleanup of the old fake Truck/Compressor/PC demo rows.
+
+    Only removes them if they are clearly untouched: not linked to an asset and
+    carrying nothing but the system-logged demo services. Anything the user has
+    edited or logged a real service against is left alone.
     """
     with db() as conn:
-        n = conn.execute("SELECT COUNT(*) c FROM machines").fetchone()["c"]
-        if n:
-            return
-        today = _date.today().isoformat()
-        last_service = add_months(today, -1)     # serviced last month
-        prev_service = add_months(last_service, -6)   # the cycle before that
-        prev_due     = last_service              # that earlier service was due now
-        next_due     = add_months(last_service, 6)    # next one, six months out
+        rows = conn.execute(
+            "SELECT id FROM machines WHERE name IN ('Truck','Compressor','PC') "
+            "AND (asset_id IS NULL OR asset_id = 0)"
+        ).fetchall()
+        for r in rows:
+            mid = r["id"]
+            real = conn.execute(
+                "SELECT COUNT(*) c FROM machine_services "
+                "WHERE machine_id=? AND IFNULL(logged_by,'') <> 'system'",
+                (mid,),
+            ).fetchone()["c"]
+            if real == 0:
+                conn.execute("DELETE FROM machine_services WHERE machine_id=?", (mid,))
+                conn.execute("DELETE FROM machines WHERE id=?", (mid,))
 
-        for name, kind in DEFAULT_MACHINES:
-            cur = conn.execute(
-                "INSERT INTO machines (name, kind, interval_months, "
-                "last_service_date, next_service_date, notes) VALUES (?,?,?,?,?,?)",
-                (name, kind, 6, last_service, next_due, ""),
+
+def import_machines_from_assets(asset_ids=None, exclude_trucks=False):
+    """Create machine-service entries linked to machine-group assets.
+
+    Skips assets that are already linked. When ``asset_ids`` is None, imports the
+    whole machine group (used for a first-run auto-populate). New machines start
+    on the default 6-month schedule with no dates — the user logs real services
+    or switches a machine to km/hours tracking afterwards. Returns how many were
+    added.
+    """
+    added = 0
+    with db() as conn:
+        linked = {r["asset_id"] for r in conn.execute(
+            "SELECT asset_id FROM machines WHERE asset_id IS NOT NULL").fetchall()}
+        for a in list_machine_assets(conn):
+            if asset_ids is not None and a["id"] not in asset_ids:
+                continue
+            if a["id"] in linked:
+                continue
+            if exclude_trucks and "truck" in (a["name"] or "").lower():
+                continue
+            conn.execute(
+                "INSERT INTO machines (name, kind, location, serial_number, asset_id, "
+                "track_by, interval_months) VALUES (?,?,?,?,?,?,?)",
+                (a["name"], "machine", a["location"] or "", a["serial_number"] or "",
+                 a["id"], "months", 6),
             )
-            mid = cur.lastrowid
-            conn.executemany(
-                "INSERT INTO machine_services (machine_id, service_date, next_due, "
-                "service_type, performed_by, notes, logged_by) "
-                "VALUES (?,?,?,?,?,?,?)",
-                [
-                    (mid, prev_service, prev_due, "Basic service", "",
-                     "Routine 6-month basic service.", "system"),
-                    (mid, last_service, next_due, "Basic service", "",
-                     "Routine 6-month basic service.", "system"),
-                ],
-            )
+            added += 1
+    return added
+
+
+def ensure_machines_from_assets():
+    """First-run populate: if no machines exist yet, pull them from the machine
+    group of the asset register (leaving any truck to be added by hand)."""
+    with db() as conn:
+        n = conn.execute("SELECT COUNT(*) c FROM machines").fetchone()["c"]
+    if n:
+        return
+    import_machines_from_assets(asset_ids=None, exclude_trucks=True)
 
 
 def get_settings():
