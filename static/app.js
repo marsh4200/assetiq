@@ -4,6 +4,7 @@ let ME = null;
 
 const API = (p, opt = {}) => {
   opt.headers = Object.assign({}, opt.headers, TOKEN ? { Authorization: 'Bearer ' + TOKEN } : {});
+  if (opt.cache === undefined) opt.cache = 'no-store';   // never serve stale GETs (e.g. version)
   return fetch('/api' + p, opt).then(async r => {
     if (r.status === 401) { clearToken(); showLogin(); throw new Error('Session expired'); }
     if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch (e) {} throw new Error(m); }
@@ -716,6 +717,31 @@ async function deleteComp(id) {
 }
 
 /* ----------------------------------------------------- machine services --- */
+const MKINDS = { truck: 'Truck', compressor: 'Compressor', pc: 'PC', machine: 'Machine' };
+const mkindLabel = k => MKINDS[k] || 'Machine';
+// Reuse existing category colours so no extra CSS is needed.
+const MKIND_COLORCLASS = { truck: 'vehicle', compressor: 'machine', pc: 'software', machine: 'machine' };
+const MKIND_ICONS = {
+  truck:      '<path d="M5 11l1.5-4.2A2 2 0 0 1 8.4 5.5h7.2a2 2 0 0 1 1.9 1.3L19 11"/><path d="M5 11h14a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-1"/><path d="M3 17v-4a1 1 0 0 1 1-1"/><circle cx="7.5" cy="17" r="1.6"/><circle cx="16.5" cy="17" r="1.6"/>',
+  compressor: '<rect x="3" y="9" width="12" height="9" rx="1.5"/><circle cx="9" cy="13.5" r="2.4"/><path d="M15 11h3a2 2 0 0 1 2 2v5"/><path d="M7 9V7a2 2 0 0 1 2-2h0a2 2 0 0 1 2 2v2"/>',
+  pc:         '<rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/>',
+  machine:    '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
+};
+const mkindIcon = k => _svg(MKIND_ICONS[k] || MKIND_ICONS.machine);
+
+// yyyy-mm-dd + N months, clamping the day to the month's length.
+function addMonths(iso, months) {
+  if (!iso) return '';
+  const d = new Date(iso + 'T00:00:00');
+  if (isNaN(d)) return '';
+  const day = d.getDate();
+  d.setDate(1);
+  d.setMonth(d.getMonth() + months);
+  const last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  d.setDate(Math.min(day, last));
+  return d.toISOString().slice(0, 10);
+}
+
 const MUNIT = { km: 'km', hours: 'hrs' };
 const fmtNum = n => (n === null || n === undefined || n === '') ? '' :
   String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
