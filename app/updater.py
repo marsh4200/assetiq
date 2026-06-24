@@ -51,13 +51,25 @@ def _semver(v: str):
     return tuple(parts[:3])
 
 
+def _fetch_remote_version() -> str:
+    """Read VERSION from the branch, defeating raw.githubusercontent's CDN cache.
+
+    raw.githubusercontent.com sits behind Fastly and will happily serve a stale
+    VERSION for a few minutes after a push. A unique query string busts that
+    cache, and the no-cache request headers ask for a fresh copy too.
+    """
+    url = f"{RAW_VERSION_URL}?_={int(time.time())}"
+    headers = {"Cache-Control": "no-cache", "Pragma": "no-cache"}
+    r = requests.get(url, timeout=TIMEOUT, headers=headers)
+    r.raise_for_status()
+    return r.text.strip()
+
+
 def check():
     """Return dict with current/latest version and whether an update exists."""
     current = local_version()
     try:
-        r = requests.get(RAW_VERSION_URL, timeout=TIMEOUT)
-        r.raise_for_status()
-        latest = r.text.strip()
+        latest = _fetch_remote_version()
     except Exception as e:
         return {
             "current": current,
