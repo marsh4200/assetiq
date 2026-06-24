@@ -23,6 +23,42 @@ const CATS = {
 };
 const catLabel = c => CATS[c] || 'Other';
 
+/* ---- iconography -------------------------------------------------------- */
+const _svg = (p, w = 2) =>
+  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+
+// Per-type icons for the Tracker (compliance) categories.
+const CAT_ICONS = {
+  licence:           '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M5 17c.5-2 2-3 4-3s3.5 1 4 3"/><line x1="15" y1="9" x2="19" y2="9"/><line x1="15" y1="13" x2="18" y2="13"/>',
+  fire_extinguisher: '<path d="M9 8h4a3 3 0 0 1 3 3v8a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-8a3 3 0 0 1 1-2.2z"/><path d="M11 8V5a2 2 0 0 1 2-2h2"/><line x1="17" y1="4" x2="20" y2="4"/><line x1="9" y1="13" x2="14" y2="13"/>',
+  software:          '<rect x="2" y="4" width="20" height="14" rx="2"/><line x1="2" y1="9" x2="22" y2="9"/><circle cx="5" cy="6.5" r=".6" fill="currentColor"/><path d="M8 21h8"/><path d="M12 18v3"/>',
+  antivirus:         '<path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/>',
+  vehicle:           '<path d="M5 11l1.5-4.2A2 2 0 0 1 8.4 5.5h7.2a2 2 0 0 1 1.9 1.3L19 11"/><path d="M5 11h14a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-1"/><path d="M4 17h1"/><path d="M3 17v-4a1 1 0 0 1 1-1"/><circle cx="7.5" cy="17" r="1.6"/><circle cx="16.5" cy="17" r="1.6"/>',
+  machine:           '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
+  certificate:       '<circle cx="12" cy="9" r="5"/><path d="M9 13l-1.5 7L12 17l4.5 3L15 13"/><path d="M12 7v2l1.5 1"/>',
+  warranty:          '<path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/>',
+  checklist:         '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 7l1.5 1.5L13 6"/><path d="M9 13l1.5 1.5L13 12"/><line x1="15" y1="7.5" x2="17" y2="7.5"/><line x1="15" y1="13.5" x2="17" y2="13.5"/>',
+  other:             '<path d="M20.6 12.6 12 21l-8.5-8.5a3.3 3.3 0 0 1 0-4.7l3.3-3.3a3.3 3.3 0 0 1 4.7 0L20.6 13z"/><circle cx="8" cy="8" r="1"/>',
+};
+const catIcon = c => _svg(CAT_ICONS[c] || CAT_ICONS.other);
+
+// Keyword-guessed icon for an Assets group (prefix folders like "Admin Office").
+const GROUP_ICONS = [
+  [/(office|admin|desk|reception|hq)/i, '<rect x="4" y="3" width="16" height="18" rx="1.5"/><line x1="9" y1="7" x2="9" y2="7"/><line x1="9" y1="11" x2="9" y2="11"/><line x1="13" y1="7" x2="13" y2="7"/><line x1="13" y1="11" x2="13" y2="11"/><path d="M10 21v-4h4v4"/>'],
+  [/(vehicle|car|van|truck|fleet|bakkie)/i, '<path d="M5 11l1.5-4.2A2 2 0 0 1 8.4 5.5h7.2a2 2 0 0 1 1.9 1.3L19 11"/><path d="M4 11h16a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1z"/><circle cx="7.5" cy="17" r="1.6"/><circle cx="16.5" cy="17" r="1.6"/>'],
+  [/(tool|workshop|equip|machine|plant)/i, '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.3L3 18v3h3l6.4-6.4a4 4 0 0 0 5.3-5.4l-2.6 2.6-2.1-.5-.5-2.1z"/>'],
+  [/(store|stock|storage|ware|inventory|spare)/i, '<path d="M21 8 12 3 3 8l9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><line x1="12" y1="13" x2="12" y2="21"/>'],
+  [/(it|network|computer|server|tech|pc|electronic)/i, '<rect x="4" y="4" width="16" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/>'],
+  [/(tv|av|audio|video|media|display|screen)/i, '<rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/>'],
+  [/(safety|fire|security|alarm)/i, '<path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/>'],
+];
+const _GROUP_FALLBACK = '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>';
+function groupIcon(name) {
+  const hit = GROUP_ICONS.find(([re]) => re.test(name || ''));
+  return _svg(hit ? hit[1] : _GROUP_FALLBACK);
+}
+const CHEVRON = _svg('<polyline points="6 9 12 15 18 9"/>');
+
 let settings = { business_name: 'ARSmartHome', notify_lead_days: '60', theme: 'dark' };
 
 /* --------------------------------------------------------------- nav ------ */
@@ -137,8 +173,13 @@ async function loadAssets() {
   const prefixes = [...new Set([...order, ...Object.keys(byPrefix)])].filter(p => byPrefix[p]);
   const nameFor = p => (groups.find(g => g.prefix === p) || {}).name || p;
   list.innerHTML = prefixes.map(p => `
-    <details class="group" open>
-      <summary><span class="g-name">${esc(nameFor(p))}</span><span class="g-meta">${esc(p)} · ${byPrefix[p].length}</span></summary>
+    <details class="group">
+      <summary>
+        <span class="g-icon">${groupIcon(nameFor(p))}</span>
+        <span class="g-name">${esc(nameFor(p))}</span>
+        <span class="g-meta"><span class="g-tag">${esc(p)}</span><span class="g-count">${byPrefix[p].length}</span></span>
+        <span class="g-chev">${CHEVRON}</span>
+      </summary>
       <div class="group-body">${byPrefix[p].map(assetCard).join('')}</div>
     </details>`).join('');
   loadThumbs();
@@ -392,7 +433,7 @@ function compCard(c) {
       <div class="top">
         <div style="flex:1;min-width:0">
           <div class="name">${esc(c.name)}</div>
-          <div class="catline"><span class="cat">${catLabel(c.category)}</span></div>
+          <div class="catline"><span class="cat-ico cat-${c.category}">${catIcon(c.category)}</span><span class="cat">${catLabel(c.category)}</span></div>
         </div>
         <span class="status ${c.status}">${statusTxt}</span>
         ${isReal ? `<button class="iconbtn" onclick='openComp(${c.id})' title="Edit">
@@ -481,8 +522,13 @@ async function loadComp() {
     const items = byCat[c];
     const bad = items.filter(i => i.status === 'expired' || i.status === 'expiring').length;
     return `
-      <details class="group" open>
-        <summary><span class="g-name">${catLabel(c)}</span><span class="g-meta">${bad ? `<span class="g-flag">${bad}</span>` : ''}${items.length}</span></summary>
+      <details class="group">
+        <summary>
+          <span class="g-icon cat-${c}">${catIcon(c)}</span>
+          <span class="g-name">${catLabel(c)}</span>
+          <span class="g-meta">${bad ? `<span class="g-flag">${bad}</span>` : ''}<span class="g-count">${items.length}</span></span>
+          <span class="g-chev">${CHEVRON}</span>
+        </summary>
         <div class="group-body">${items.map(compCard).join('')}</div>
       </details>`;
   }).join('');

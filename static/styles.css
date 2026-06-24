@@ -14,6 +14,18 @@
   --expired:  #f87171;
   --none:     #5b616c;
 
+  /* per-type accent hues (Tracker categories) */
+  --c-licence:     #4f8ff7;
+  --c-fire:        #f87171;
+  --c-software:    #38bdf8;
+  --c-antivirus:   #34d399;
+  --c-vehicle:     #a78bfa;
+  --c-machine:     #fb923c;
+  --c-certificate: #f5b53d;
+  --c-warranty:    #2dd4bf;
+  --c-checklist:   #818cf8;
+  --c-other:       #9aa1ac;
+
   --radius: 12px;
   --tap: 44px;
   --shadow: 0 6px 24px rgba(0,0,0,.35);
@@ -182,6 +194,77 @@ label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 5px;
 .iconbtn.danger:hover { color: var(--expired); border-color: var(--expired); }
 .iconbtn svg { width: 17px; height: 17px; }
 
+/* ---------------------------------------------------- collapsible groups - */
+.group {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius); margin-bottom: 10px; overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.group + .group { margin-top: 0; }
+.group > summary {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; cursor: pointer; user-select: none;
+  list-style: none; min-height: 56px;
+  transition: background .15s ease;
+}
+.group > summary::-webkit-details-marker { display: none; }   /* kill default triangle */
+.group > summary::marker { content: ""; }
+.group > summary:hover { background: var(--surface-2); }
+.group[open] > summary { border-bottom: 1px solid var(--line); }
+
+.g-icon {
+  flex: 0 0 auto; width: 38px; height: 38px; border-radius: 10px;
+  display: grid; place-items: center;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+}
+.g-icon svg { width: 21px; height: 21px; }
+
+.g-name {
+  flex: 1; min-width: 0; font-family: var(--disp); font-weight: 600;
+  font-size: 16px; letter-spacing: .02em; text-transform: uppercase;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.g-meta { flex: 0 0 auto; display: flex; align-items: center; gap: 7px; }
+.g-tag {
+  font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  padding: 2px 7px; border-radius: 6px; letter-spacing: .03em;
+}
+.g-count {
+  min-width: 24px; height: 22px; padding: 0 7px; border-radius: 999px;
+  display: inline-grid; place-items: center; font-size: 12px; font-weight: 700;
+  color: var(--muted); background: var(--surface-2); border: 1px solid var(--line);
+}
+.g-flag {
+  min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px;
+  display: inline-grid; place-items: center; font-size: 12px; font-weight: 700;
+  color: #fff; background: var(--expired);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--expired) 22%, transparent);
+}
+.g-chev {
+  flex: 0 0 auto; color: var(--muted); display: grid; place-items: center;
+  transition: transform .2s ease;
+}
+.g-chev svg { width: 20px; height: 20px; }
+.group[open] > summary .g-chev { transform: rotate(180deg); color: var(--text); }
+
+.group-body { padding: 10px 12px 12px; }
+.group-body .card:last-child { margin-bottom: 0; }
+.group-body .asset { background: var(--surface-2); }
+
+/* tint the group icon per Tracker category */
+.g-icon.cat-licence,     .cat-ico.cat-licence     { background: color-mix(in srgb, var(--c-licence) 16%, transparent);     color: var(--c-licence); }
+.g-icon.cat-fire_extinguisher, .cat-ico.cat-fire_extinguisher { background: color-mix(in srgb, var(--c-fire) 16%, transparent); color: var(--c-fire); }
+.g-icon.cat-software,    .cat-ico.cat-software    { background: color-mix(in srgb, var(--c-software) 16%, transparent);    color: var(--c-software); }
+.g-icon.cat-antivirus,   .cat-ico.cat-antivirus   { background: color-mix(in srgb, var(--c-antivirus) 16%, transparent);   color: var(--c-antivirus); }
+.g-icon.cat-vehicle,     .cat-ico.cat-vehicle     { background: color-mix(in srgb, var(--c-vehicle) 16%, transparent);     color: var(--c-vehicle); }
+.g-icon.cat-machine,     .cat-ico.cat-machine     { background: color-mix(in srgb, var(--c-machine) 16%, transparent);     color: var(--c-machine); }
+.g-icon.cat-certificate, .cat-ico.cat-certificate { background: color-mix(in srgb, var(--c-certificate) 16%, transparent); color: var(--c-certificate); }
+.g-icon.cat-warranty,    .cat-ico.cat-warranty    { background: color-mix(in srgb, var(--c-warranty) 16%, transparent);    color: var(--c-warranty); }
+.g-icon.cat-checklist,   .cat-ico.cat-checklist   { background: color-mix(in srgb, var(--c-checklist) 16%, transparent);   color: var(--c-checklist); }
+.g-icon.cat-other,       .cat-ico.cat-other       { background: color-mix(in srgb, var(--c-other) 16%, transparent);       color: var(--c-other); }
+
 /* Compliance card with status stripe */
 .comp { border-left: 4px solid var(--none); }
 .comp.valid    { border-left-color: var(--valid); }
@@ -189,7 +272,13 @@ label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 5px;
 .comp.expired  { border-left-color: var(--expired); }
 .comp .top { display: flex; align-items: flex-start; gap: 12px; }
 .comp .name { font-weight: 600; font-size: 16px; }
-.comp .catline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 3px; }
+.comp .catline { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 4px; }
+.cat-ico {
+  flex: 0 0 auto; width: 22px; height: 22px; border-radius: 6px;
+  display: grid; place-items: center;
+  background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent);
+}
+.cat-ico svg { width: 14px; height: 14px; }
 .cat {
   font-size: 11px; letter-spacing: .05em; text-transform: uppercase; font-weight: 600;
   color: var(--muted);
