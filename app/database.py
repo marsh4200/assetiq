@@ -147,6 +147,15 @@ def init_db():
                )"""
         )
 
+        # --- compliance photos (e.g. a photo of the fire extinguisher) ------
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS compliance_photos (
+                   compliance_id INTEGER PRIMARY KEY,
+                   data          TEXT,
+                   FOREIGN KEY(compliance_id) REFERENCES compliance(id) ON DELETE CASCADE
+               )"""
+        )
+
         # --- compliance: issued date + renewal history ----------------------
         comp_cols = [r["name"] for r in conn.execute("PRAGMA table_info(compliance)").fetchall()]
         if "issue_date" not in comp_cols:

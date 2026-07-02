@@ -525,6 +525,7 @@ function compCard(c) {
   return `
     <div class="card comp ${c.status}">
       <div class="top">
+        ${c.has_photo ? `<div class="thumb" data-cphoto="${c.id}" onclick="viewCompPhoto(${c.id})"></div>` : ''}
         <div style="flex:1;min-width:0">
           <div class="name">${esc(c.name)}</div>
           <div class="catline"><span class="cat-ico cat-${c.category}">${catIcon(c.category)}</span><span class="cat">${catLabel(c.category)}</span></div>
@@ -641,6 +642,29 @@ async function loadComp() {
         <div class="group-body">${items.map(compCard).join('')}</div>
       </details>`;
   }).join('');
+  loadCompThumbs();
+}
+
+// Lazy-load compliance card thumbnails as authorised blobs (img tags can't send headers).
+async function loadCompThumbs() {
+  for (const el of document.querySelectorAll('.thumb[data-cphoto]')) {
+    const id = el.getAttribute('data-cphoto');
+    el.removeAttribute('data-cphoto');
+    try {
+      const r = await fetch(`/api/compliance/${id}/photo`, { headers: { Authorization: 'Bearer ' + TOKEN } });
+      if (r.ok) { const url = URL.createObjectURL(await r.blob()); el.style.backgroundImage = `url(${url})`; }
+    } catch (e) {}
+  }
+}
+
+async function viewCompPhoto(id) {
+  try {
+    const r = await fetch(`/api/compliance/${id}/photo`, { headers: { Authorization: 'Bearer ' + TOKEN } });
+    if (!r.ok) return;
+    const url = URL.createObjectURL(await r.blob());
+    $('#lightboxImg').src = url;
+    $('#lightbox').classList.add('show');
+  } catch (e) {}
 }
 
 function openComp(id) {
@@ -670,16 +694,64 @@ function openComp(id) {
           <div class="field"><label>Reference / number</label><input id="c_reference" value="${esc(c.reference)}"></div>
           <div class="field"><label>Responsible person</label><input id="c_responsible_person" value="${esc(c.responsible_person)}"></div>
         </div>
+        <div class="field"><label>Photo</label>
+          <div class="photo-pick">
+            <div class="preview ${c.has_photo ? '' : 'empty'}" id="c_photoPreview">${c.has_photo ? '' : 'No photo'}</div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <button type="button" class="btn ghost small" onclick="document.getElementById('c_photoInput').click()">${c.has_photo ? 'Replace' : 'Add photo'}</button>
+              <button type="button" class="btn ghost small" id="c_photoRemoveBtn" onclick="removeCompPhoto()" style="${c.has_photo ? '' : 'display:none'}">Remove</button>
+            </div>
+            <input type="file" id="c_photoInput" accept="image/*" capture="environment" style="display:none" onchange="pickCompPhoto(this)">
+          </div>
+        </div>
         <div class="field"><label>Notes</label><textarea id="c_notes">${esc(c.notes)}</textarea></div>
       </div>
       <div class="mfoot">
         ${editing ? `<button class="btn danger" onclick="deleteComp(${id})">Delete</button>` : ''}
         <button class="btn" onclick="saveComp(${editing ? id : 'null'})">Save</button>
       </div>`;
+    compPhoto = undefined;
     $('#modalBg').classList.add('show');
     compFieldToggle();
+    if (c.has_photo) loadPreviewCompThumb(id);
     setTimeout(() => $('#c_name').focus(), 60);
   });
+}
+
+let compPhoto;   // undefined = unchanged, '' = remove, dataURL = new image
+
+async function loadPreviewCompThumb(id) {
+  try {
+    const r = await fetch(`/api/compliance/${id}/photo`, { headers: { Authorization: 'Bearer ' + TOKEN } });
+    if (r.ok) $('#c_photoPreview').style.backgroundImage = `url(${URL.createObjectURL(await r.blob())})`;
+  } catch (e) {}
+}
+
+function pickCompPhoto(input) {
+  const file = input.files[0]; input.value = '';
+  if (!file) return;
+  const img = new Image();
+  const reader = new FileReader();
+  reader.onload = () => { img.onload = () => {
+    // Downscale to max 1024px, export JPEG ~0.72 so the DB stays small.
+    const max = 1024;
+    let { width: w, height: h } = img;
+    if (w > max || h > max) { const s = max / Math.max(w, h); w = Math.round(w * s); h = Math.round(h * s); }
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    c.getContext('2d').drawImage(img, 0, 0, w, h);
+    compPhoto = c.toDataURL('image/jpeg', 0.72);
+    const p = $('#c_photoPreview');
+    p.classList.remove('empty'); p.textContent = ''; p.style.backgroundImage = `url(${compPhoto})`;
+    $('#c_photoRemoveBtn').style.display = '';
+  }; img.src = reader.result; };
+  reader.readAsDataURL(file);
+}
+
+function removeCompPhoto() {
+  compPhoto = '';
+  const p = $('#c_photoPreview');
+  p.classList.add('empty'); p.textContent = 'No photo'; p.style.backgroundImage = '';
+  $('#c_photoRemoveBtn').style.display = 'none';
 }
 
 function compFieldToggle() {
@@ -701,6 +773,7 @@ async function saveComp(id) {
     next_service_date: isMachine ? $('#c_next_service_date').value : '',
     notes: $('#c_notes').value.trim(),
   };
+  if (compPhoto !== undefined) body.photo = compPhoto;   // '' removes, dataURL sets
   if (!body.name) { toast('Name is required', 'err'); return; }
   try {
     await API(id ? '/compliance/' + id : '/compliance',

@@ -57,6 +57,7 @@ class Compliance(BaseModel):
     last_service_date: str = ""
     next_service_date: str = ""
     notes: str = ""
+    photo: str | None = None        # base64 data URL; None = leave unchanged
 
 
 class RenewIn(BaseModel):
@@ -483,12 +484,30 @@ def _decorate_compliance(row, lead):
     return d
 
 
+def _save_compliance_photo(conn, compliance_id, photo):
+    """photo: None = leave as-is; '' = remove; data URL = set."""
+    if photo is None:
+        return
+    if photo == "":
+        conn.execute("DELETE FROM compliance_photos WHERE compliance_id=?", (compliance_id,))
+    else:
+        conn.execute(
+            "INSERT INTO compliance_photos (compliance_id, data) VALUES (?,?) "
+            "ON CONFLICT(compliance_id) DO UPDATE SET data=excluded.data",
+            (compliance_id, photo),
+        )
+
+
 @app.get("/api/compliance")
 def list_compliance(category: str = "", q: str = "", user: dict = Depends(auth.current_user)):
     lead = _lead_days()
     with database.db() as conn:
         rows = conn.execute("SELECT * FROM compliance").fetchall()
+        with_photos = {r["compliance_id"] for r in conn.execute(
+            "SELECT compliance_id FROM compliance_photos").fetchall()}
     items = [_decorate_compliance(r, lead) for r in rows]
+    for i in items:
+        i["has_photo"] = i["id"] in with_photos
     if category:
         items = [i for i in items if i["category"] == category]
     if q:
@@ -514,6 +533,7 @@ def create_compliance(c: Compliance, user: dict = Depends(auth.current_user)):
             (c.name, c.category, c.reference, c.responsible_person, c.issue_date,
              c.expiry_date, c.last_service_date, c.next_service_date, c.notes),
         )
+        _save_compliance_photo(conn, cur.lastrowid, c.photo)
         row = conn.execute("SELECT * FROM compliance WHERE id=?", (cur.lastrowid,)).fetchone()
     return _decorate_compliance(row, _lead_days())
 
@@ -530,6 +550,7 @@ def update_compliance(item_id: int, c: Compliance, user: dict = Depends(auth.cur
             (c.name, c.category, c.reference, c.responsible_person, c.issue_date,
              c.expiry_date, c.last_service_date, c.next_service_date, c.notes, item_id),
         )
+        _save_compliance_photo(conn, item_id, c.photo)
         row = conn.execute("SELECT * FROM compliance WHERE id=?", (item_id,)).fetchone()
     return _decorate_compliance(row, _lead_days())
 
@@ -538,8 +559,28 @@ def update_compliance(item_id: int, c: Compliance, user: dict = Depends(auth.cur
 def delete_compliance(item_id: int, user: dict = Depends(auth.current_user)):
     with database.db() as conn:
         conn.execute("DELETE FROM compliance_history WHERE compliance_id=?", (item_id,))
+        conn.execute("DELETE FROM compliance_photos WHERE compliance_id=?", (item_id,))
         conn.execute("DELETE FROM compliance WHERE id=?", (item_id,))
     return {"ok": True}
+
+
+@app.get("/api/compliance/{item_id}/photo")
+def get_compliance_photo(item_id: int, user: dict = Depends(auth.current_user)):
+    with database.db() as conn:
+        row = conn.execute("SELECT data FROM compliance_photos WHERE compliance_id=?", (item_id,)).fetchone()
+    if not row or not row["data"]:
+        raise HTTPException(404, "No photo")
+    data = row["data"]
+    if data.startswith("data:"):
+        try:
+            header, b64 = data.split(",", 1)
+            media = header.split(";")[0].replace("data:", "") or "image/jpeg"
+        except ValueError:
+            raise HTTPException(500, "Corrupt photo")
+        import base64
+        return Response(content=base64.b64decode(b64), media_type=media,
+                        headers={"Cache-Control": "no-cache"})
+    raise HTTPException(500, "Unsupported photo format")
 
 
 @app.post("/api/compliance/{item_id}/renew")
