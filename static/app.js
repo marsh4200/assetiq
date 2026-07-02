@@ -274,10 +274,12 @@ function openAsset(id) {
           <div class="photo-pick">
             <div class="preview ${a.has_photo ? '' : 'empty'}" id="photoPreview">${a.has_photo ? '' : 'No photo'}</div>
             <div style="display:flex;flex-direction:column;gap:6px">
-              <button type="button" class="btn ghost small" onclick="document.getElementById('photoInput').click()">${a.has_photo ? 'Replace' : 'Add photo'}</button>
+              <button type="button" class="btn ghost small" onclick="document.getElementById('photoInputCamera').click()">Take photo</button>
+              <button type="button" class="btn ghost small" onclick="document.getElementById('photoInputFile').click()">${a.has_photo ? 'Replace' : 'Upload photo'}</button>
               <button type="button" class="btn ghost small" id="photoRemoveBtn" onclick="removePhoto()" style="${a.has_photo ? '' : 'display:none'}">Remove</button>
             </div>
-            <input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none" onchange="pickPhoto(this)">
+            <input type="file" id="photoInputCamera" accept="image/*" capture="environment" style="display:none" onchange="pickPhoto(this)">
+            <input type="file" id="photoInputFile" accept="image/*" style="display:none" onchange="pickPhoto(this)">
           </div>
         </div>
 
@@ -698,10 +700,12 @@ function openComp(id) {
           <div class="photo-pick">
             <div class="preview ${c.has_photo ? '' : 'empty'}" id="c_photoPreview">${c.has_photo ? '' : 'No photo'}</div>
             <div style="display:flex;flex-direction:column;gap:6px">
-              <button type="button" class="btn ghost small" onclick="document.getElementById('c_photoInput').click()">${c.has_photo ? 'Replace' : 'Add photo'}</button>
+              <button type="button" class="btn ghost small" onclick="document.getElementById('c_photoInputCamera').click()">Take photo</button>
+              <button type="button" class="btn ghost small" onclick="document.getElementById('c_photoInputFile').click()">${c.has_photo ? 'Replace' : 'Upload photo'}</button>
               <button type="button" class="btn ghost small" id="c_photoRemoveBtn" onclick="removeCompPhoto()" style="${c.has_photo ? '' : 'display:none'}">Remove</button>
             </div>
-            <input type="file" id="c_photoInput" accept="image/*" capture="environment" style="display:none" onchange="pickCompPhoto(this)">
+            <input type="file" id="c_photoInputCamera" accept="image/*" capture="environment" style="display:none" onchange="pickCompPhoto(this)">
+            <input type="file" id="c_photoInputFile" accept="image/*" style="display:none" onchange="pickCompPhoto(this)">
           </div>
         </div>
         <div class="field"><label>Notes</label><textarea id="c_notes">${esc(c.notes)}</textarea></div>
